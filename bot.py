@@ -137,7 +137,7 @@ def get_btc_price_change():
 def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
     if df is None:
         logger.error("Veri eksik, analiz yapılamadı")
-        return None, None  None, None
+        return None, None, None
     last_row = df.iloc[-1]
     payload = {
         'symbol': 'ETH/USDT',
