@@ -26,22 +26,26 @@ telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Global değişkenler
 last_deep_search = {'sentiment': 'neutral', 'timestamp': None}
-open_position = None  # Açık pozisyon bilgileri
-STOP_LOSS = 0.02     # %2 kayıp
+open_position = None
+STOP_LOSS = 0.02
 
-# Piyasa verileri (ETH/USDT)
+# Piyasa verileri
 def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
-    klines = market_client.get_kline_data(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount'])
-    df['close'] = df['close'].astype(float)
-    df['rsi'] = ta.rsi(df['close'], length=14)
-    df['ma50'] = ta.sma(df['close'], length=50)
-    df['ma200'] = ta.sma(df['close'], length=200)
-    df['macd'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACD_12_26_9']
-    df['macd_signal'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACDs_12_26_9']
-    return df
+    try:
+        klines = market_client.get_kline_data(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount'])
+        df['close'] = df['close'].astype(float)
+        df['rsi'] = ta.rsi(df['close'], length=14)
+        df['ma50'] = ta.sma(df['close'], length=50)
+        df['ma200'] = ta.sma(df['close'], length=200)
+        df['macd'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACD_12_26_9']
+        df['macd_signal'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACDs_12_26_9']
+        return df
+    except Exception as e:
+        print(f"Veri çekme hatası: {str(e)}")
+        return None
 
-# BTC fiyat değişimi (24 saatlik)
+# BTC fiyat değişimi
 def get_btc_price_change():
     try:
         ticker = market_client.get_24hr_stats('BTCUSDTM')
@@ -53,6 +57,9 @@ def get_btc_price_change():
 
 # Grok API ile analiz
 def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
+    if df is None:
+        print("Veri eksik, analiz yapılamadı")
+        return None, None, None
     last_row = df.iloc[-1]
     payload = {
         'symbol': 'ETH/USDT',
@@ -74,22 +81,43 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
         response = requests.post('https://api.x.ai/grok/analyze', json=payload, headers=headers)
         response.raise_for_status()
         result = response.json()
-        signal_strength = result.get('signal_strength', 'normal')
-        take_profit = 0.01 if signal_strength == 'strong' else 0.005  # %1 veya %0.5
-        return result.get('decision'), min(result.get('leverage', 5), 5), take_profit
+        decision = result.get('decision')
+        # RSI öncelikli karar
+        if last_row['rsi'] < 45:
+            decision = 'buy'
+            signal_strength = 'strong' if last_row['rsi'] < 30 else 'normal'
+        elif last_row['rsi'] > 55:
+            decision = 'sell'
+            signal_strength = 'strong' if last_row['rsi'] > 70 else 'normal'
+        else:
+            decision = None
+            signal_strength = 'normal'
+        take_profit = 0.01 if signal_strength == 'strong' else 0.005
+        log_message = (f"Grok API kararı: {decision}, RSI: {last_row['rsi']:.2f}, "
+                       f"MA50: {last_row['ma50']:.2f}, MA200: {last_row['ma200']:.2f}, "
+                       f"MACD: {last_row['macd']:.2f}, Sentiment: {sentiment}, "
+                       f"BTC: {btc_price_change:.2f}%")
+        print(log_message)
+        asyncio.run(send_telegram_message(f"📊 Analiz: {log_message}"))
+        return decision, min(result.get('leverage', 5), 5), take_profit
     except Exception as e:
-        print(f"Grok API hatası: {str(e)}")
+        error_message = f"Grok API hatası: {str(e)}"
+        print(error_message)
+        asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return None, None, None
 
 # İşlem aç
 def open_position(symbol, side, leverage, balance, take_profit):
     try:
         price = float(market_client.get_ticker(symbol)['price'])
-        size = (balance * leverage) / price  # ETH cinsinden lot
-        size = round(size, 2)  # KuCoin hassasiyeti
+        size = (balance * leverage) / price
+        size = round(size, 2)
         order = trade_client.create_market_order(symbol, side, leverage=leverage, size=size)
         return {'order': order, 'size': size, 'entry_price': price, 'side': side, 'leverage': leverage, 'take_profit': take_profit}
     except Exception as e:
+        error_message = f"Pozisyon açma hatası: {str(e)}"
+        print(error_message)
+        asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return str(e)
 
 # İşlem kapat
@@ -104,6 +132,9 @@ def close_position(symbol, position, reason):
             profit = (position['entry_price'] - close_price) * position['size'] * position['leverage']
         return {'order': order, 'profit': profit, 'close_price': close_price, 'reason': reason}
     except Exception as e:
+        error_message = f"Pozisyon kapatma hatası: {str(e)}"
+        print(error_message)
+        asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return str(e)
 
 # Take-profit ve stop-loss kontrolü
@@ -114,7 +145,7 @@ def check_take_profit_stop_loss(position, current_price):
             return 'take-profit'
         if price_change <= -STOP_LOSS:
             return 'stop-loss'
-    else:  # sell
+    else:
         price_change = (position['entry_price'] - current_price) / position['entry_price']
         if price_change >= position['take_profit']:
             return 'take-profit'
@@ -124,13 +155,16 @@ def check_take_profit_stop_loss(position, current_price):
 
 # Telegram bildirimi
 async def send_telegram_message(message):
-    await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    try:
+        await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    except Exception as e:
+        print(f"Telegram hatası: {str(e)}")
 
 # DeepSearch simülasyonu
 def deep_search_simulation():
     import random
     sentiments = ['positive', 'neutral', 'negative']
-    return random.choice(sentiments)  # Gerçek tarama Grok API’siyle
+    return random.choice(sentiments)
 
 # DeepSearch zamanlaması
 def should_run_deep_search():
@@ -142,7 +176,7 @@ def should_run_deep_search():
         return True
     return False
 
-# Ana döngü: 7/24 piyasa izleme
+# Ana döngü
 async def main():
     global last_deep_search, open_position
     symbol = 'ETHUSDTM'
@@ -150,8 +184,12 @@ async def main():
         try:
             # Piyasa verileri
             df = get_market_data(symbol)
+            if df is None:
+                await send_telegram_message("❌ Piyasa verisi alınamadı")
+                time.sleep(60)
+                continue
             
-            # DeepSearch: Günde 4 kez
+            # DeepSearch
             if should_run_deep_search():
                 sentiment = deep_search_simulation()
                 last_deep_search = {'sentiment': sentiment, 'timestamp': datetime.utcnow()}
@@ -166,11 +204,11 @@ async def main():
             elif btc_price_change >= 3:
                 await send_telegram_message(f"📈 BTC %3’ten fazla yükseldi: {btc_price_change:.2f}%")
             
-            # Grok’un API üzerinden kararı
-foil            decision, leverage, take_profit = grok_api_analysis(df, sentiment, btc_price_change)
+            # Grok’un kararı
+            decision, leverage, take_profit = grok_api_analysis(df, sentiment, btc_price_change)
             balance = float(trade_client.get_account_balance()['balance'])
             
-            # Mevcut pozisyon kontrolü (take-profit/stop-loss)
+            # Mevcut pozisyon kontrolü
             if open_position:
                 current_price = float(market_client.get_ticker(symbol)['price'])
                 close_reason = check_take_profit_stop_loss(open_position, current_price)
@@ -181,8 +219,8 @@ foil            decision, leverage, take_profit = grok_api_analysis(df, sentimen
                         await send_telegram_message(message)
                         open_position = None
             
-            # Pozisyon yönetimi
-            if decision and not open_position and take_profit:  # Yeni pozisyon
+            # Yeni pozisyon
+            if decision and not open_position and take_profit:
                 position = open_position(symbol, decision, leverage, balance, take_profit)
                 if isinstance(position, dict):
                     open_position = position
@@ -198,11 +236,12 @@ foil            decision, leverage, take_profit = grok_api_analysis(df, sentimen
                     await send_telegram_message(message)
                     open_position = None
             
-            # 5 dakikada bir kontrol
             time.sleep(300)
         
         except Exception as e:
-            await send_telegram_message(f"❌ Hata: {str(e)}")
+            error_message = f"Genel hata: {str(e)}"
+            print(error_message)
+            await send_telegram_message(f"❌ {error_message}")
             time.sleep(60)
 
 if __name__ == "__main__":
