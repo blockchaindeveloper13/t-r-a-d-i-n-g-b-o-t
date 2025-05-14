@@ -28,6 +28,8 @@ telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 last_deep_search = {'sentiment': 'neutral', 'timestamp': None}
 open_position = None
 STOP_LOSS = 0.02
+last_report_time = None
+trade_history = []  # Günlük rapor için işlem geçmişi
 
 # Piyasa verileri
 def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
@@ -82,7 +84,6 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
         response.raise_for_status()
         result = response.json()
         decision = result.get('decision')
-        # RSI öncelikli karar
         if last_row['rsi'] < 45:
             decision = 'buy'
             signal_strength = 'strong' if last_row['rsi'] < 30 else 'normal'
@@ -130,6 +131,7 @@ def close_position(symbol, position, reason):
             profit = (close_price - position['entry_price']) * position['size'] * position['leverage']
         else:
             profit = (position['entry_price'] - close_price) * position['size'] * position['leverage']
+        trade_history.append({'time': datetime.utcnow(), 'profit': profit, 'reason': reason})
         return {'order': order, 'profit': profit, 'close_price': close_price, 'reason': reason}
     except Exception as e:
         error_message = f"Pozisyon kapatma hatası: {str(e)}"
@@ -152,6 +154,28 @@ def check_take_profit_stop_loss(position, current_price):
         if price_change <= -STOP_LOSS:
             return 'stop-loss'
     return None
+
+# Günlük rapor
+async def daily_report():
+    global trade_history
+    try:
+        balance = float(trade_client.get_account_balance()['balance'])
+        last_24h = datetime.utcnow() - timedelta(hours=24)
+        recent_trades = [t for t in trade_history if t['time'] >= last_24h]
+        trade_count = len(recent_trades)
+        total_profit = sum(t['profit'] for t in recent_trades)
+        sentiment = last_deep_search['sentiment']
+        report = (f"📅 Günlük Rapor ({datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')})\n"
+                  f"🟢 Bot aktif ve çalışıyor\n"
+                  f"💰 Bakiye: {balance:.2f} USDT\n"
+                  f"📊 Son 24 saatteki işlem sayısı: {trade_count}\n"
+                  f"📈 Toplam kâr/zarar: {total_profit:.2f} USDT\n"
+                  f"📰 Son DeepSearch Sentiment: {sentiment}")
+        await send_telegram_message(report)
+        # 24 saatlik geçmişi temizle
+        trade_history = [t for t in trade_history if t['time'] >= last_24h]
+    except Exception as e:
+        await send_telegram_message(f"❌ Günlük rapor hatası: {str(e)}")
 
 # Telegram bildirimi
 async def send_telegram_message(message):
@@ -176,9 +200,19 @@ def should_run_deep_search():
         return True
     return False
 
+# Günlük rapor zamanlaması
+def should_run_daily_report():
+    global last_report_time
+    now = datetime.utcnow()
+    if last_report_time is None:
+        return True
+    if now - last_report_time >= timedelta(hours=24):
+        return True
+    return False
+
 # Ana döngü
 async def main():
-    global last_deep_search, open_position
+    global last_deep_search, open_position, last_report_time
     symbol = 'ETHUSDTM'
     while True:
         try:
@@ -196,6 +230,11 @@ async def main():
                 await send_telegram_message(f"📰 DeepSearch Sonucu: ETH/USDT Sentiment = {sentiment}")
             else:
                 sentiment = last_deep_search['sentiment']
+            
+            # Günlük rapor
+            if should_run_daily_report():
+                await daily_report()
+                last_report_time = datetime.utcnow()
             
             # BTC fiyat değişimi
             btc_price_change = get_btc_price_change()
