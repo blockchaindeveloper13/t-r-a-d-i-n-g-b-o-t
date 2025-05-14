@@ -27,6 +27,7 @@ telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 # Global değişkenler
 last_deep_search = {'sentiment': 'neutral', 'timestamp': None}
 open_position = None  # Açık pozisyon bilgileri
+STOP_LOSS = 0.02     # %2 kayıp
 
 # Piyasa verileri (ETH/USDT)
 def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
@@ -73,37 +74,53 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
         response = requests.post('https://api.x.ai/grok/analyze', json=payload, headers=headers)
         response.raise_for_status()
         result = response.json()
-        return result.get('decision'), min(result.get('leverage', 5), 5)  # Max 5x
+        signal_strength = result.get('signal_strength', 'normal')
+        take_profit = 0.01 if signal_strength == 'strong' else 0.005  # %1 veya %0.5
+        return result.get('decision'), min(result.get('leverage', 5), 5), take_profit
     except Exception as e:
         print(f"Grok API hatası: {str(e)}")
-        return None, None
+        return None, None, None
 
 # İşlem aç
-def open_position(symbol, side, leverage, balance):
+def open_position(symbol, side, leverage, balance, take_profit):
     try:
-        # Bakiyenin tamamıyla işlem: ETH lot büyüklüğü hesapla
         price = float(market_client.get_ticker(symbol)['price'])
         size = (balance * leverage) / price  # ETH cinsinden lot
         size = round(size, 2)  # KuCoin hassasiyeti
         order = trade_client.create_market_order(symbol, side, leverage=leverage, size=size)
-        return {'order': order, 'size': size, 'entry_price': price, 'side': side, 'leverage': leverage}
+        return {'order': order, 'size': size, 'entry_price': price, 'side': side, 'leverage': leverage, 'take_profit': take_profit}
     except Exception as e:
         return str(e)
 
 # İşlem kapat
-def close_position(symbol, position):
+def close_position(symbol, position, reason):
     try:
-        side = 'buy' if position['side'] == 'sell' else 'sell'  # Ters pozisyon
+        side = 'buy' if position['side'] == 'sell' else 'sell'
         order = trade_client.create_market_order(symbol, side, leverage=position['leverage'], size=position['size'])
         close_price = float(market_client.get_ticker(symbol)['price'])
-        # Kâr/zarar hesapla
         if position['side'] == 'buy':
             profit = (close_price - position['entry_price']) * position['size'] * position['leverage']
         else:
             profit = (position['entry_price'] - close_price) * position['size'] * position['leverage']
-        return {'order': order, 'profit': profit, 'close_price': close_price}
+        return {'order': order, 'profit': profit, 'close_price': close_price, 'reason': reason}
     except Exception as e:
         return str(e)
+
+# Take-profit ve stop-loss kontrolü
+def check_take_profit_stop_loss(position, current_price):
+    if position['side'] == 'buy':
+        price_change = (current_price - position['entry_price']) / position['entry_price']
+        if price_change >= position['take_profit']:
+            return 'take-profit'
+        if price_change <= -STOP_LOSS:
+            return 'stop-loss'
+    else:  # sell
+        price_change = (position['entry_price'] - current_price) / position['entry_price']
+        if price_change >= position['take_profit']:
+            return 'take-profit'
+        if price_change <= -STOP_LOSS:
+            return 'stop-loss'
+    return None
 
 # Telegram bildirimi
 async def send_telegram_message(message):
@@ -150,22 +167,34 @@ async def main():
                 await send_telegram_message(f"📈 BTC %3’ten fazla yükseldi: {btc_price_change:.2f}%")
             
             # Grok’un API üzerinden kararı
-            decision, leverage = grok_api_analysis(df, sentiment, btc_price_change)
+foil            decision, leverage, take_profit = grok_api_analysis(df, sentiment, btc_price_change)
             balance = float(trade_client.get_account_balance()['balance'])
             
+            # Mevcut pozisyon kontrolü (take-profit/stop-loss)
+            if open_position:
+                current_price = float(market_client.get_ticker(symbol)['price'])
+                close_reason = check_take_profit_stop_loss(open_position, current_price)
+                if close_reason:
+                    close_result = close_position(symbol, open_position, close_reason)
+                    if isinstance(close_result, dict):
+                        message = f"📉 Pozisyon Kapandı\nSembol: ETH/USDT\nYön: {open_position['side'].upper()}\nKâr/Zarar: {close_result['profit']:.2f} USDT\nKapanış Fiyatı: ${close_result['close_price']:.2f}\nKaldıraç: {open_position['leverage']}x\nBüyüklük: {open_position['size']} ETH\nBakiye: {balance:.2f} USDT\nNeden: {close_result['reason']}"
+                        await send_telegram_message(message)
+                        open_position = None
+            
             # Pozisyon yönetimi
-            if decision and not open_position:  # Yeni pozisyon
-                position = open_position(symbol, decision, leverage, balance)
+            if decision and not open_position and take_profit:  # Yeni pozisyon
+                position = open_position(symbol, decision, leverage, balance, take_profit)
                 if isinstance(position, dict):
                     open_position = position
-                    message = f"📊 Yeni Pozisyon Açıldı\nSembol: ETH/USDT\nYön: {decision.upper()}\nKaldıraç: {leverage}x\nBüyüklük: {position['size']} ETH\nGiriş Fiyatı: ${position['entry_price']:.2f}\nBakiye: {balance:.2f} USDT\nSentiment: {sentiment}\nBTC Değişim: {btc_price_change:.2f}%"
+                    signal_strength = 'strong' if take_profit == 0.01 else 'normal'
+                    message = f"📊 Yeni Pozisyon Açıldı\nSembol: ETH/USDT\nYön: {decision.upper()}\nKaldıraç: {leverage}x\nBüyüklük: {position['size']} ETH\nGiriş Fiyatı: ${position['entry_price']:.2f}\nTake-Profit: {take_profit*100:.1f}%\nBakiye: {balance:.2f} USDT\nSinyal Gücü: {signal_strength}\nSentiment: {sentiment}\nBTC Değişim: {btc_price_change:.2f}%"
                     await send_telegram_message(message)
             
-            # Pozisyon kapatma (örnek: ters sinyalde kapat)
+            # Ters sinyalde kapatma
             if open_position and decision and decision != open_position['side']:
-                close_result = close_position(symbol, open_position)
+                close_result = close_position(symbol, open_position, 'ters sinyal')
                 if isinstance(close_result, dict):
-                    message = f"📉 Pozisyon Kapandı\nSembol: ETH/USDT\nYön: {open_position['side'].upper()}\nKâr/Zarar: {close_result['profit']:.2f} USDT\nKapanış Fiyatı: ${close_result['close_price']:.2f}\nKaldıraç: {open_position['leverage']}x\nBüyüklük: {open_position['size']} ETH\nBakiye: {balance:.2f} USDT"
+                    message = f"📉 Pozisyon Kapandı\nSembol: ETH/USDT\nYön: {open_position['side'].upper()}\nKâr/Zarar: {close_result['profit']:.2f} USDT\nKapanış Fiyatı: ${close_result['close_price']:.2f}\nKaldıraç: {open_position['leverage']}x\nBüyüklük: {open_position['size']} ETH\nBakiye: {balance:.2f} USDT\nNeden: {close_result['reason']}"
                     await send_telegram_message(message)
                     open_position = None
             
