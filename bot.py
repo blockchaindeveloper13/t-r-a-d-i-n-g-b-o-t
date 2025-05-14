@@ -29,7 +29,7 @@ last_deep_search = {'sentiment': 'neutral', 'timestamp': None}
 open_position = None
 STOP_LOSS = 0.02
 last_report_time = None
-trade_history = []  # Günlük rapor için işlem geçmişi
+trade_history = []
 
 # Piyasa verileri
 def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
@@ -172,7 +172,6 @@ async def daily_report():
                   f"📈 Toplam kâr/zarar: {total_profit:.2f} USDT\n"
                   f"📰 Son DeepSearch Sentiment: {sentiment}")
         await send_telegram_message(report)
-        # 24 saatlik geçmişi temizle
         trade_history = [t for t in trade_history if t['time'] >= last_24h]
     except Exception as e:
         await send_telegram_message(f"❌ Günlük rapor hatası: {str(e)}")
@@ -214,6 +213,8 @@ def should_run_daily_report():
 async def main():
     global last_deep_search, open_position, last_report_time
     symbol = 'ETHUSDTM'
+    # Başlangıç bildirimi
+    await send_telegram_message("🟢 Bot başlatıldı! ETH/USDT izleniyor...")
     while True:
         try:
             # Piyasa verileri
