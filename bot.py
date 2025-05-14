@@ -31,8 +31,8 @@ if not all([KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE, TELEGRAM_B
 
 # KuCoin istemcileri
 try:
-    trade_client = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
-    market_client = Market(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
+    trade_client = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE)
+    market_client = Market(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE)
     logger.info("KuCoin istemcileri başarıyla başlatıldı")
 except Exception as e:
     logger.error(f"KuCoin istemcisi başlatılamadı: {str(e)}")
@@ -68,6 +68,7 @@ def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
         return df
     except Exception as e:
         logger.error(f"Veri çekme hatası: {str(e)}")
+        asyncio.run(send_telegram_message(f"❌ Veri çekme hatası: {str(e)}"))
         return None
 
 # BTC fiyat değişimi
@@ -79,6 +80,7 @@ def get_btc_price_change():
         return price_change_percent
     except Exception as e:
         logger.error(f"BTC fiyat hatası: {str(e)}")
+        asyncio.run(send_telegram_message(f"❌ BTC fiyat hatası: {str(e)}"))
         return 0
 
 # Grok API ile analiz
