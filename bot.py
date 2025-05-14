@@ -26,17 +26,20 @@ KUCOIN_API_SECRET = os.getenv('KUCOIN_API_SECRET')
 KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-GROK_API_KEY = os.getenv('GROK_API_KEY')
 
 # Çevre değişkenlerini kontrol et
-if not all([KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GROK_API_KEY]):
+if not all([KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
     logger.error("Eksik çevre değişkeni! Lütfen .env dosyasını ve Heroku Config Vars'ı kontrol edin.")
     exit(1)
 
 # KuCoin API imzalama
 def generate_signature(endpoint, method, params, api_secret):
     timestamp = str(int(time.time() * 1000))
-    str_to_sign = timestamp + method + endpoint + params
+    if method == "GET":
+        str_to_sign = timestamp + method + endpoint + params
+    else:  # POST
+        str_to_sign = timestamp + method + endpoint + json.dumps(params)
+    logger.info(f"Signature string: {str_to_sign}")
     sign = hmac.new(api_secret.encode('utf-8'), str_to_sign.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(sign).decode('utf-8'), timestamp
 
@@ -55,7 +58,7 @@ STOP_LOSS = 0.02
 last_report_time = None
 trade_history = []
 
-# Telegram mesajı için yardımcı fonksiyon (senkron bağlamda kullanım için)
+# Telegram mesajı için yardımcı fonksiyon
 def send_telegram_message_sync(message):
     try:
         loop = asyncio.get_running_loop()
@@ -72,7 +75,7 @@ async def send_telegram_message(message):
     except Exception as e:
         logger.error(f"Telegram hatası: {str(e)}")
 
-# Piyasa verileri (HTTP ile)
+# Piyasa verileri (Futures API)
 def get_market_data(symbol='ETHUSDTM', timeframe='5', limit=100):
     try:
         conn = http.client.HTTPSConnection("api-futures.kucoin.com")
@@ -107,13 +110,13 @@ def get_market_data(symbol='ETHUSDTM', timeframe='5', limit=100):
         send_telegram_message_sync(f"❌ Veri çekme hatası: {str(e)}")
         return None
 
-# BTC fiyat değişimi (HTTP ile)
+# BTC fiyat değişimi (Futures API)
 def get_btc_price_change():
     try:
         conn = http.client.HTTPSConnection("api-futures.kucoin.com")
-        endpoint = "/api/v1/market/stats?symbol=BTCUSDTM"
+        endpoint = "/api/v1/ticker?symbol=BTCUSDTM"
         params = "symbol=BTCUSDTM"
-        sign, timestamp = generate_signature("/api/v1/market/stats", "GET", params, KUCOIN_API_SECRET)
+        sign, timestamp = generate_signature("/api/v1/ticker", "GET", params, KUCOIN_API_SECRET)
         headers = {
             'KC-API-KEY': KUCOIN_API_KEY,
             'KC-API-SIGN': sign,
@@ -139,51 +142,28 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
         logger.error("Veri eksik, analiz yapılamadı")
         return None, None, None
     last_row = df.iloc[-1]
-    payload = {
-        'symbol': 'ETH/USDT',
-        'rsi': last_row['rsi'],
-        'ma50': last_row['ma50'],
-        'ma200': last_row['ma200'],
-        'macd': last_row['macd'],
-        'macd_signal': last_row['macd_signal'],
-        'sentiment': sentiment,
-        'btc_price_change': btc_price_change
-    }
+    decision = None
+    signal_strength = 'normal'
+    take_profit = 0.005
     
-    headers = {
-        'Authorization': f'Bearer {GROK_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    
-    try:
-        response = requests.post('https://api.x.ai/grok/analyze', json=payload, headers=headers)
-        response.raise_for_status()
-        result = response.json()
-        decision = result.get('decision')
-        if last_row['rsi'] < 45:
-            decision = 'buy'
-            signal_strength = 'strong' if last_row['rsi'] < 30 else 'normal'
-        elif last_row['rsi'] > 55:
-            decision = 'sell'
-            signal_strength = 'strong' if last_row['rsi'] > 70 else 'normal'
-        else:
-            decision = None
-            signal_strength = 'normal'
+    if last_row['rsi'] < 45:
+        decision = 'buy'
+        signal_strength = 'strong' if last_row['rsi'] < 30 else 'normal'
         take_profit = 0.01 if signal_strength == 'strong' else 0.005
-        log_message = (f"Grok API kararı: {decision}, RSI: {last_row['rsi']:.2f}, "
-                       f"MA50: {last_row['ma50']:.2f}, MA200: {last_row['ma200']:.2f}, "
-                       f"MACD: {last_row['macd']:.2f}, Sentiment: {sentiment}, "
-                       f"BTC: {btc_price_change:.2f}%")
-        logger.info(log_message)
-        send_telegram_message_sync(f"📊 Analiz: {log_message}")
-        return decision, min(result.get('leverage', 5), 5), take_profit
-    except Exception as e:
-        error_message = f"Grok API hatası: {str(e)}"
-        logger.error(error_message)
-        send_telegram_message_sync(f"❌ {error_message}")
-        return None, None, None
+    elif last_row['rsi'] > 55:
+        decision = 'sell'
+        signal_strength = 'strong' if last_row['rsi'] > 70 else 'normal'
+        take_profit = 0.01 if signal_strength == 'strong' else 0.005
+    
+    log_message = (f"RSI kararı: {decision}, RSI: {last_row['rsi']:.2f}, "
+                   f"MA50: {last_row['ma50']:.2f}, MA200: {last_row['ma200']:.2f}, "
+                   f"MACD: {last_row['macd']:.2f}, Sentiment: {sentiment}, "
+                   f"BTC: {btc_price_change:.2f}%")
+    logger.info(log_message)
+    send_telegram_message_sync(f"📊 Analiz: {log_message}")
+    return decision, 5, take_profit
 
-# İşlem aç (HTTP ile)
+# İşlem aç (Futures API)
 def open_position(symbol, side, leverage, balance, take_profit):
     try:
         conn = http.client.HTTPSConnection("api-futures.kucoin.com")
@@ -206,24 +186,30 @@ def open_position(symbol, side, leverage, balance, take_profit):
         size = (balance * leverage) / price
         size = round(size, 2)
         
-        # Market order oluştur
         order_endpoint = "/api/v1/orders"
-        order_params = f"clientOid={str(int(time.time() * 1000))}&side={side}&symbol={symbol}&type=market&leverage={leverage}&size={size}"
-        order_sign, order_timestamp = generate_signature("/api/v1/orders", "POST", order_params, KUCOIN_API_SECRET)
-        order_headers = {
-            'KC-API-KEY': KUCOIN_API_KEY,
-            'KC-API-SIGN': order_sign,
-            'KC-API-TIMESTAMP': order_timestamp,
-            'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE,
-            'Content-Type': 'application/x-www-form-urlencoded'
+        order_params = {
+            "clientOid": str(int(time.time() * 1000)),
+            "side": side,
+            "symbol": symbol,
+            "type": "market",
+            "leverage": str(leverage),
+            "size": str(size)
         }
-        conn.request("POST", order_endpoint, order_params, order_headers)
+        sign, timestamp = generate_signature("/api/v1/orders", "POST", order_params, KUCOIN_API_SECRET)
+        headers = {
+            'KC-API-KEY': KUCOIN_API_KEY,
+            'KC-API-SIGN': sign,
+            'KC-API-TIMESTAMP': timestamp,
+            'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE,
+            'Content-Type': 'application/json'
+        }
+        conn.request("POST", order_endpoint, json.dumps(order_params), headers)
         order_res = conn.getresponse()
         order_data = json.loads(order_res.read().decode("utf-8"))
         if order_data['code'] != '200000':
             raise Exception(f"Order hatası: {order_data.get('msg', 'Bilinmeyen hata')}")
         
-        logger.info(f"Pozisyon açıldı: {symbol}, Yön: {side}, Büyüklük: {size}, Fiyat: {price}")
+        logger.info(f"Pozisyon açıldı: {symbol}, Yön: {side}, B Fiyat: {price}")
         return {'order': order_data, 'size': size, 'entry_price': price, 'side': side, 'leverage': leverage, 'take_profit': take_profit}
     except Exception as e:
         error_message = f"Pozisyon açma hatası: {str(e)}"
@@ -231,7 +217,7 @@ def open_position(symbol, side, leverage, balance, take_profit):
         send_telegram_message_sync(f"❌ {error_message}")
         return str(e)
 
-# İşlem kapat (HTTP ile)
+# İşlem kapat (Futures API)
 def close_position(symbol, position, reason):
     try:
         side = 'buy' if position['side'] == 'sell' else 'sell'
@@ -252,18 +238,24 @@ def close_position(symbol, position, reason):
             raise Exception(f"API hatası: {data.get('msg', 'Bilinmeyen hata')}")
         close_price = float(data['data']['price'])
         
-        # Market order oluştur
         order_endpoint = "/api/v1/orders"
-        order_params = f"clientOid={str(int(time.time() * 1000))}&side={side}&symbol={symbol}&type=market&leverage={position['leverage']}&size={position['size']}"
-        order_sign, order_timestamp = generate_signature("/api/v1/orders", "POST", order_params, KUCOIN_API_SECRET)
-        order_headers = {
-            'KC-API-KEY': KUCOIN_API_KEY,
-            'KC-API-SIGN': order_sign,
-            'KC-API-TIMESTAMP': order_timestamp,
-            'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE,
-            'Content-Type': 'application/x-www-form-urlencoded'
+        order_params = {
+            "clientOid": str(int(time.time() * 1000)),
+            "side": side,
+            "symbol": symbol,
+            "type": "market",
+            "leverage": str(position['leverage']),
+            "size": str(position['size'])
         }
-        conn.request("POST", order_endpoint, order_params, order_headers)
+        sign, timestamp = generate_signature("/api/v1/orders", "POST", order_params, KUCOIN_API_SECRET)
+        headers = {
+            'KC-API-KEY': KUCOIN_API_KEY,
+            'KC-API-SIGN': sign,
+            'KC-API-TIMESTAMP': timestamp,
+            'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE,
+            'Content-Type': 'application/json'
+        }
+        conn.request("POST", order_endpoint, json.dumps(order_params), headers)
         order_res = conn.getresponse()
         order_data = json.loads(order_res.read().decode("utf-8"))
         if order_data['code'] != '200000':
@@ -378,7 +370,6 @@ def should_run_daily_report():
 async def main():
     global last_deep_search, open_position, last_report_time
     symbol = 'ETHUSDTM'
-    # Başlangıç bildirimi
     try:
         await send_telegram_message("🟢 Bot başlatıldı! ETH/USDT izleniyor...")
         logger.info("Bot başlatıldı, ana döngü başlıyor")
@@ -387,14 +378,12 @@ async def main():
     
     while True:
         try:
-            # Piyasa verileri
             df = get_market_data(symbol)
             if df is None:
                 await send_telegram_message("❌ Piyasa verisi alınamadı")
                 time.sleep(60)
                 continue
             
-            # DeepSearch
             if should_run_deep_search():
                 sentiment = deep_search_simulation()
                 last_deep_search = {'sentiment': sentiment, 'timestamp': datetime.now(timezone.utc)}
@@ -402,22 +391,18 @@ async def main():
             else:
                 sentiment = last_deep_search['sentiment']
             
-            # Günlük rapor
             if should_run_daily_report():
                 await daily_report()
                 last_report_time = datetime.now(timezone.utc)
             
-            # BTC fiyat değişimi
             btc_price_change = get_btc_price_change()
             if btc_price_change <= -3:
                 await send_telegram_message(f"⚠️ BTC %3’ten fazla düştü: {btc_price_change:.2f}%")
             elif btc_price_change >= 3:
                 await send_telegram_message(f"📈 BTC %3’ten fazla yükseldi: {btc_price_change:.2f}%")
             
-            # Grok’un kararı
             decision, leverage, take_profit = grok_api_analysis(df, sentiment, btc_price_change)
             
-            # Bakiye kontrolü
             conn = http.client.HTTPSConnection("api-futures.kucoin.com")
             endpoint = "/api/v1/account-overview?currency=USDT"
             params = "currency=USDT"
@@ -435,7 +420,6 @@ async def main():
                 raise Exception(f"API hatası: {data.get('msg', 'Bilinmeyen hata')}")
             balance = float(data['data']['accountEquity'])
             
-            # Mevcut pozisyon kontrolü
             if open_position:
                 conn = http.client.HTTPSConnection("api-futures.kucoin.com")
                 endpoint = f"/api/v1/ticker?symbol={symbol}"
@@ -470,7 +454,6 @@ async def main():
                         await send_telegram_message(message)
                         open_position = None
             
-            # Yeni pozisyon
             if decision and not open_position and take_profit:
                 position = open_position(symbol, decision, leverage, balance, take_profit)
                 if isinstance(position, dict):
@@ -489,7 +472,6 @@ async def main():
                                f"BTC Değişim: {btc_price_change:.2f}%")
                     await send_telegram_message(message)
             
-            # Ters sinyalde kapatma
             if open_position and decision and decision != open_position['side']:
                 close_result = close_position(symbol, open_position, 'ters sinyal')
                 if isinstance(close_result, dict):
