@@ -53,6 +53,23 @@ STOP_LOSS = 0.02
 last_report_time = None
 trade_history = []
 
+# Telegram mesajı için yardımcı fonksiyon (senkron bağlamda kullanım için)
+def send_telegram_message_sync(message):
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message))
+        logger.info(f"Telegram mesajı gönderildi: {message[:50]}...")
+    except Exception as e:
+        logger.error(f"Telegram mesajı gönderilemedi: {str(e)}")
+
+# Telegram bildirimi (asenkron)
+async def send_telegram_message(message):
+    try:
+        await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        logger.info(f"Telegram mesajı gönderildi: {message[:50]}...")
+    except Exception as e:
+        logger.error(f"Telegram hatası: {str(e)}")
+
 # Piyasa verileri
 def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
     try:
@@ -68,7 +85,7 @@ def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
         return df
     except Exception as e:
         logger.error(f"Veri çekme hatası: {str(e)}")
-        asyncio.run(send_telegram_message(f"❌ Veri çekme hatası: {str(e)}"))
+        send_telegram_message_sync(f"❌ Veri çekme hatası: {str(e)}")
         return None
 
 # BTC fiyat değişimi
@@ -80,7 +97,7 @@ def get_btc_price_change():
         return price_change_percent
     except Exception as e:
         logger.error(f"BTC fiyat hatası: {str(e)}")
-        asyncio.run(send_telegram_message(f"❌ BTC fiyat hatası: {str(e)}"))
+        send_telegram_message_sync(f"❌ BTC fiyat hatası: {str(e)}")
         return 0
 
 # Grok API ile analiz
@@ -125,12 +142,12 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
                        f"MACD: {last_row['macd']:.2f}, Sentiment: {sentiment}, "
                        f"BTC: {btc_price_change:.2f}%")
         logger.info(log_message)
-        asyncio.run(send_telegram_message(f"📊 Analiz: {log_message}"))
+        send_telegram_message_sync(f"📊 Analiz: {log_message}")
         return decision, min(result.get('leverage', 5), 5), take_profit
     except Exception as e:
         error_message = f"Grok API hatası: {str(e)}"
         logger.error(error_message)
-        asyncio.run(send_telegram_message(f"❌ {error_message}"))
+        send_telegram_message_sync(f"❌ {error_message}")
         return None, None, None
 
 # İşlem aç
@@ -145,7 +162,7 @@ def open_position(symbol, side, leverage, balance, take_profit):
     except Exception as e:
         error_message = f"Pozisyon açma hatası: {str(e)}"
         logger.error(error_message)
-        asyncio.run(send_telegram_message(f"❌ {error_message}"))
+        send_telegram_message_sync(f"❌ {error_message}")
         return str(e)
 
 # İşlem kapat
@@ -164,7 +181,7 @@ def close_position(symbol, position, reason):
     except Exception as e:
         error_message = f"Pozisyon kapatma hatası: {str(e)}"
         logger.error(error_message)
-        asyncio.run(send_telegram_message(f"❌ {error_message}"))
+        send_telegram_message_sync(f"❌ {error_message}")
         return str(e)
 
 # Take-profit ve stop-loss kontrolü
@@ -210,14 +227,6 @@ async def daily_report():
         error_message = f"Günlük rapor hatası: {str(e)}"
         logger.error(error_message)
         await send_telegram_message(f"❌ {error_message}")
-
-# Telegram bildirimi
-async def send_telegram_message(message):
-    try:
-        await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        logger.info(f"Telegram mesajı gönderildi: {message[:50]}...")
-    except Exception as e:
-        logger.error(f"Telegram hatası: {str(e)}")
 
 # DeepSearch simülasyonu
 def deep_search_simulation():
