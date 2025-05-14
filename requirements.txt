@@ -1,8 +1,8 @@
 kucoin-python>=1.0.15
-python-telegram-bot
-python-dotenv
+python-telegram-bot>=20.0
+python-dotenv>=1.0.0
 pandas>=2.0.0
 pandas_ta>=0.3.14b0
-numpy>=1.26.0
-requests
-setuptools
+numpy>=1.26.0,<2.0.0
+requests>=2.31.0
+setuptools>=65.5.0
