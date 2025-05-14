@@ -8,7 +8,12 @@ import pandas_ta as ta
 import asyncio
 import time
 import json
+import logging
 from datetime import datetime, timedelta
+
+# Loglama ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Çevre değişkenleri
 load_dotenv()
@@ -19,10 +24,27 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 GROK_API_KEY = os.getenv('GROK_API_KEY')
 
+# Çevre değişkenlerini kontrol et
+if not all([KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GROK_API_KEY]):
+    logger.error("Eksik çevre değişkeni! Lütfen .env dosyasını ve Heroku Config Vars'ı kontrol edin.")
+    exit(1)
+
 # KuCoin istemcileri
-trade_client = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
-market_client = Market(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
-telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+try:
+    trade_client = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
+    market_client = Market(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_future=True)
+    logger.info("KuCoin istemcileri başarıyla başlatıldı")
+except Exception as e:
+    logger.error(f"KuCoin istemcisi başlatılamadı: {str(e)}")
+    exit(1)
+
+# Telegram istemcisi
+try:
+    telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    logger.info("Telegram bot başarıyla başlatıldı")
+except Exception as e:
+    logger.error(f"Telegram bot başlatılamadı: {str(e)}")
+    exit(1)
 
 # Global değişkenler
 last_deep_search = {'sentiment': 'neutral', 'timestamp': None}
@@ -42,9 +64,10 @@ def get_market_data(symbol='ETHUSDTM', timeframe='5min', limit=100):
         df['ma200'] = ta.sma(df['close'], length=200)
         df['macd'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACD_12_26_9']
         df['macd_signal'] = ta.macd(df['close'], fast=12, slow=26, signal=9)['MACDs_12_26_9']
+        logger.info(f"Piyasa verisi alındı: {symbol}, RSI: {df['rsi'].iloc[-1]:.2f}")
         return df
     except Exception as e:
-        print(f"Veri çekme hatası: {str(e)}")
+        logger.error(f"Veri çekme hatası: {str(e)}")
         return None
 
 # BTC fiyat değişimi
@@ -52,15 +75,16 @@ def get_btc_price_change():
     try:
         ticker = market_client.get_24hr_stats('BTCUSDTM')
         price_change_percent = float(ticker.get('changeRate', 0)) * 100
+        logger.info(f"BTC 24 saatlik değişim: {price_change_percent:.2f}%")
         return price_change_percent
     except Exception as e:
-        print(f"BTC fiyat hatası: {str(e)}")
+        logger.error(f"BTC fiyat hatası: {str(e)}")
         return 0
 
 # Grok API ile analiz
 def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
     if df is None:
-        print("Veri eksik, analiz yapılamadı")
+        logger.error("Veri eksik, analiz yapılamadı")
         return None, None, None
     last_row = df.iloc[-1]
     payload = {
@@ -98,12 +122,12 @@ def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
                        f"MA50: {last_row['ma50']:.2f}, MA200: {last_row['ma200']:.2f}, "
                        f"MACD: {last_row['macd']:.2f}, Sentiment: {sentiment}, "
                        f"BTC: {btc_price_change:.2f}%")
-        print(log_message)
+        logger.info(log_message)
         asyncio.run(send_telegram_message(f"📊 Analiz: {log_message}"))
         return decision, min(result.get('leverage', 5), 5), take_profit
     except Exception as e:
         error_message = f"Grok API hatası: {str(e)}"
-        print(error_message)
+        logger.error(error_message)
         asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return None, None, None
 
@@ -114,10 +138,11 @@ def open_position(symbol, side, leverage, balance, take_profit):
         size = (balance * leverage) / price
         size = round(size, 2)
         order = trade_client.create_market_order(symbol, side, leverage=leverage, size=size)
+        logger.info(f"Pozisyon açıldı: {symbol}, Yön: {side}, Büyüklük: {size}, Fiyat: {price}")
         return {'order': order, 'size': size, 'entry_price': price, 'side': side, 'leverage': leverage, 'take_profit': take_profit}
     except Exception as e:
         error_message = f"Pozisyon açma hatası: {str(e)}"
-        print(error_message)
+        logger.error(error_message)
         asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return str(e)
 
@@ -132,28 +157,33 @@ def close_position(symbol, position, reason):
         else:
             profit = (position['entry_price'] - close_price) * position['size'] * position['leverage']
         trade_history.append({'time': datetime.utcnow(), 'profit': profit, 'reason': reason})
+        logger.info(f"Pozisyon kapandı: {symbol}, Kâr/Zarar: {profit:.2f}, Neden: {reason}")
         return {'order': order, 'profit': profit, 'close_price': close_price, 'reason': reason}
     except Exception as e:
         error_message = f"Pozisyon kapatma hatası: {str(e)}"
-        print(error_message)
+        logger.error(error_message)
         asyncio.run(send_telegram_message(f"❌ {error_message}"))
         return str(e)
 
 # Take-profit ve stop-loss kontrolü
 def check_take_profit_stop_loss(position, current_price):
-    if position['side'] == 'buy':
-        price_change = (current_price - position['entry_price']) / position['entry_price']
-        if price_change >= position['take_profit']:
-            return 'take-profit'
-        if price_change <= -STOP_LOSS:
-            return 'stop-loss'
-    else:
-        price_change = (position['entry_price'] - current_price) / position['entry_price']
-        if price_change >= position['take_profit']:
-            return 'take-profit'
-        if price_change <= -STOP_LOSS:
-            return 'stop-loss'
-    return None
+    try:
+        if position['side'] == 'buy':
+            price_change = (current_price - position['entry_price']) / position['entry_price']
+            if price_change >= position['take_profit']:
+                return 'take-profit'
+            if price_change <= -STOP_LOSS:
+                return 'stop-loss'
+        else:
+            price_change = (position['entry_price'] - current_price) / position['entry_price']
+            if price_change >= position['take_profit']:
+                return 'take-profit'
+            if price_change <= -STOP_LOSS:
+                return 'stop-loss'
+        return None
+    except Exception as e:
+        logger.error(f"Take-profit/stop-loss kontrol hatası: {str(e)}")
+        return None
 
 # Günlük rapor
 async def daily_report():
@@ -173,21 +203,31 @@ async def daily_report():
                   f"📰 Son DeepSearch Sentiment: {sentiment}")
         await send_telegram_message(report)
         trade_history = [t for t in trade_history if t['time'] >= last_24h]
+        logger.info("Günlük rapor gönderildi")
     except Exception as e:
-        await send_telegram_message(f"❌ Günlük rapor hatası: {str(e)}")
+        error_message = f"Günlük rapor hatası: {str(e)}"
+        logger.error(error_message)
+        await send_telegram_message(f"❌ {error_message}")
 
 # Telegram bildirimi
 async def send_telegram_message(message):
     try:
         await telegram_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        logger.info(f"Telegram mesajı gönderildi: {message[:50]}...")
     except Exception as e:
-        print(f"Telegram hatası: {str(e)}")
+        logger.error(f"Telegram hatası: {str(e)}")
 
 # DeepSearch simülasyonu
 def deep_search_simulation():
-    import random
-    sentiments = ['positive', 'neutral', 'negative']
-    return random.choice(sentiments)
+    try:
+        import random
+        sentiments = ['positive', 'neutral', 'negative']
+        sentiment = random.choice(sentiments)
+        logger.info(f"DeepSearch simülasyonu: {sentiment}")
+        return sentiment
+    except Exception as e:
+        logger.error(f"DeepSearch simülasyon hatası: {str(e)}")
+        return 'neutral'
 
 # DeepSearch zamanlaması
 def should_run_deep_search():
@@ -214,7 +254,12 @@ async def main():
     global last_deep_search, open_position, last_report_time
     symbol = 'ETHUSDTM'
     # Başlangıç bildirimi
-    await send_telegram_message("🟢 Bot başlatıldı! ETH/USDT izleniyor...")
+    try:
+        await send_telegram_message("🟢 Bot başlatıldı! ETH/USDT izleniyor...")
+        logger.info("Bot başlatıldı, ana döngü başlıyor")
+    except Exception as e:
+        logger.error(f"Başlangıç bildirimi hatası: {str(e)}")
+    
     while True:
         try:
             # Piyasa verileri
@@ -255,7 +300,15 @@ async def main():
                 if close_reason:
                     close_result = close_position(symbol, open_position, close_reason)
                     if isinstance(close_result, dict):
-                        message = f"📉 Pozisyon Kapandı\nSembol: ETH/USDT\nYön: {open_position['side'].upper()}\nKâr/Zarar: {close_result['profit']:.2f} USDT\nKapanış Fiyatı: ${close_result['close_price']:.2f}\nKaldıraç: {open_position['leverage']}x\nBüyüklük: {open_position['size']} ETH\nBakiye: {balance:.2f} USDT\nNeden: {close_result['reason']}"
+                        message = (f"📉 Pozisyon Kapandı\n"
+                                   f"Sembol: ETH/USDT\n"
+                                   f"Yön: {open_position['side'].upper()}\n"
+                                   f"Kâr/Zarar: {close_result['profit']:.2f} USDT\n"
+                                   f"Kapanış Fiyatı: ${close_result['close_price']:.2f}\n"
+                                   f"Kaldıraç: {open_position['leverage']}x\n"
+                                   f"Büyüklük: {open_position['size']} ETH\n"
+                                   f"Bakiye: {balance:.2f} USDT\n"
+                                   f"Neden: {close_result['reason']}")
                         await send_telegram_message(message)
                         open_position = None
             
@@ -265,14 +318,32 @@ async def main():
                 if isinstance(position, dict):
                     open_position = position
                     signal_strength = 'strong' if take_profit == 0.01 else 'normal'
-                    message = f"📊 Yeni Pozisyon Açıldı\nSembol: ETH/USDT\nYön: {decision.upper()}\nKaldıraç: {leverage}x\nBüyüklük: {position['size']} ETH\nGiriş Fiyatı: ${position['entry_price']:.2f}\nTake-Profit: {take_profit*100:.1f}%\nBakiye: {balance:.2f} USDT\nSinyal Gücü: {signal_strength}\nSentiment: {sentiment}\nBTC Değişim: {btc_price_change:.2f}%"
+                    message = (f"📊 Yeni Pozisyon Açıldı\n"
+                               f"Sembol: ETH/USDT\n"
+                               f"Yön: {decision.upper()}\n"
+                               f"Kaldıraç: {leverage}x\n"
+                               f"Büyüklük: {position['size']} ETH\n"
+                               f"Giriş Fiyatı: ${position['entry_price']:.2f}\n"
+                               f"Take-Profit: {take_profit*100:.1f}%\n"
+                               f"Bakiye: {balance:.2f} USDT\n"
+                               f"Sinyal Gücü: {signal_strength}\n"
+                               f"Sentiment: {sentiment}\n"
+                               f"BTC Değişim: {btc_price_change:.2f}%")
                     await send_telegram_message(message)
             
             # Ters sinyalde kapatma
             if open_position and decision and decision != open_position['side']:
                 close_result = close_position(symbol, open_position, 'ters sinyal')
                 if isinstance(close_result, dict):
-                    message = f"📉 Pozisyon Kapandı\nSembol: ETH/USDT\nYön: {open_position['side'].upper()}\nKâr/Zarar: {close_result['profit']:.2f} USDT\nKapanış Fiyatı: ${close_result['close_price']:.2f}\nKaldıraç: {open_position['leverage']}x\nBüyüklük: {open_position['size']} ETH\nBakiye: {balance:.2f} USDT\nNeden: {close_result['reason']}"
+                    message = (f"📉 Pozisyon Kapandı\n"
+                               f"Sembol: ETH/USDT\n"
+                               f"Yön: {open_position['side'].upper()}\n"
+                               f"Kâr/Zarar: {close_result['profit']:.2f} USDT\n"
+                               f"Kapanış Fiyatı: ${close_result['close_price']:.2f}\n"
+                               f"Kaldıraç: {open_position['leverage']}x\n"
+                               f"Büyüklük: {open_position['size']} ETH\n"
+                               f"Bakiye: {balance:.2f} USDT\n"
+                               f"Neden: {close_result['reason']}")
                     await send_telegram_message(message)
                     open_position = None
             
@@ -280,7 +351,7 @@ async def main():
         
         except Exception as e:
             error_message = f"Genel hata: {str(e)}"
-            print(error_message)
+            logger.error(error_message)
             await send_telegram_message(f"❌ {error_message}")
             time.sleep(60)
 
