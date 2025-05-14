@@ -1,0 +1,6 @@
+kucoin-python
+python-telegram-bot
+python-dotenv
+pandas
+pandas_ta
+requests
