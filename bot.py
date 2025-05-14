@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
+from datetime import timezone
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -75,8 +76,8 @@ async def send_telegram_message(message):
 def get_market_data(symbol='ETHUSDTM', timeframe='5', limit=100):
     try:
         conn = http.client.HTTPSConnection("api-futures.kucoin.com")
-        from_time = int((datetime.utcnow() - timedelta(minutes=limit * int(timeframe))).timestamp() * 1000)
-        to_time = int(datetime.utcnow().timestamp() * 1000)
+        from_time = int((datetime.now(timezone.utc) - timedelta(minutes=limit * int(timeframe))).timestamp() * 1000)
+        to_time = int(datetime.now(timezone.utc).timestamp() * 1000)
         endpoint = f"/api/v1/kline/query?symbol={symbol}&granularity={timeframe}&from={from_time}&to={to_time}"
         params = f"symbol={symbol}&granularity={timeframe}&from={from_time}&to={to_time}"
         sign, timestamp = generate_signature("/api/v1/kline/query", "GET", params, KUCOIN_API_SECRET)
@@ -92,7 +93,7 @@ def get_market_data(symbol='ETHUSDTM', timeframe='5', limit=100):
         if data['code'] != '200000':
             raise Exception(f"API hatası: {data.get('msg', 'Bilinmeyen hata')}")
         klines = data['data']
-        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'amount'])
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['close'] = df['close'].astype(float)
         df['rsi'] = ta.rsi(df['close'], length=14)
         df['ma50'] = ta.sma(df['close'], length=50)
@@ -136,7 +137,7 @@ def get_btc_price_change():
 def grok_api_analysis(df, sentiment='neutral', btc_price_change=0):
     if df is None:
         logger.error("Veri eksik, analiz yapılamadı")
-        return None, None, None
+        return None, None  None, None
     last_row = df.iloc[-1]
     payload = {
         'symbol': 'ETH/USDT',
@@ -272,7 +273,7 @@ def close_position(symbol, position, reason):
             profit = (close_price - position['entry_price']) * position['size'] * position['leverage']
         else:
             profit = (position['entry_price'] - close_price) * position['size'] * position['leverage']
-        trade_history.append({'time': datetime.utcnow(), 'profit': profit, 'reason': reason})
+        trade_history.append({'time': datetime.now(timezone.utc), 'profit': profit, 'reason': reason})
         logger.info(f"Pozisyon kapandı: {symbol}, Kâr/Zarar: {profit:.2f}, Neden: {reason}")
         return {'order': order_data, 'profit': profit, 'close_price': close_price, 'reason': reason}
     except Exception as e:
@@ -322,12 +323,12 @@ async def daily_report():
             raise Exception(f"API hatası: {data.get('msg', 'Bilinmeyen hata')}")
         balance = float(data['data']['accountEquity'])
         
-        last_24h = datetime.utcnow() - timedelta(hours=24)
+        last_24h = datetime.now(timezone.utc) - timedelta(hours=24)
         recent_trades = [t for t in trade_history if t['time'] >= last_24h]
         trade_count = len(recent_trades)
         total_profit = sum(t['profit'] for t in recent_trades)
         sentiment = last_deep_search['sentiment']
-        report = (f"📅 Günlük Rapor ({datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')})\n"
+        report = (f"📅 Günlük Rapor ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})\n"
                   f"🟢 Bot aktif ve çalışıyor\n"
                   f"💰 Bakiye: {balance:.2f} USDT\n"
                   f"📊 Son 24 saatteki işlem sayısı: {trade_count}\n"
@@ -356,7 +357,7 @@ def deep_search_simulation():
 # DeepSearch zamanlaması
 def should_run_deep_search():
     global last_deep_search
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if last_deep_search['timestamp'] is None:
         return True
     if now - last_deep_search['timestamp'] >= timedelta(hours=6):
@@ -366,7 +367,7 @@ def should_run_deep_search():
 # Günlük rapor zamanlaması
 def should_run_daily_report():
     global last_report_time
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if last_report_time is None:
         return True
     if now - last_report_time >= timedelta(hours=24):
@@ -396,7 +397,7 @@ async def main():
             # DeepSearch
             if should_run_deep_search():
                 sentiment = deep_search_simulation()
-                last_deep_search = {'sentiment': sentiment, 'timestamp': datetime.utcnow()}
+                last_deep_search = {'sentiment': sentiment, 'timestamp': datetime.now(timezone.utc)}
                 await send_telegram_message(f"📰 DeepSearch Sonucu: ETH/USDT Sentiment = {sentiment}")
             else:
                 sentiment = last_deep_search['sentiment']
@@ -404,7 +405,7 @@ async def main():
             # Günlük rapor
             if should_run_daily_report():
                 await daily_report()
-                last_report_time = datetime.utcnow()
+                last_report_time = datetime.now(timezone.utc)
             
             # BTC fiyat değişimi
             btc_price_change = get_btc_price_change()
@@ -415,7 +416,24 @@ async def main():
             
             # Grok’un kararı
             decision, leverage, take_profit = grok_api_analysis(df, sentiment, btc_price_change)
-            balance = float(trade_client.get_account_balance()['balance'])
+            
+            # Bakiye kontrolü
+            conn = http.client.HTTPSConnection("api-futures.kucoin.com")
+            endpoint = "/api/v1/account-overview?currency=USDT"
+            params = "currency=USDT"
+            sign, timestamp = generate_signature("/api/v1/account-overview", "GET", params, KUCOIN_API_SECRET)
+            headers = {
+                'KC-API-KEY': KUCOIN_API_KEY,
+                'KC-API-SIGN': sign,
+                'KC-API-TIMESTAMP': timestamp,
+                'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE
+            }
+            conn.request("GET", endpoint, '', headers)
+            res = conn.getresponse()
+            data = json.loads(res.read().decode("utf-8"))
+            if data['code'] != '200000':
+                raise Exception(f"API hatası: {data.get('msg', 'Bilinmeyen hata')}")
+            balance = float(data['data']['accountEquity'])
             
             # Mevcut pozisyon kontrolü
             if open_position:
