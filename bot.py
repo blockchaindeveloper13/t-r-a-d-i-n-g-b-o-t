@@ -59,43 +59,53 @@ def get_funding_rate(symbol="ETHUSDTM"):
         logger.error(f"Fonlama oranı hatası: {str(e)}")
         return None
 
-# Bakiye kontrol (account-overview-all)
-def check_balance():
+# Margin modu kontrol
+def check_margin_mode(symbol="ETHUSDTM"):
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/account-overview-all"
-        payload = "GET" + "/api/v1/account-overview-all"
+        url = f"https://api-futures.kucoin.com/api/v1/margin-mode?symbol={symbol}"
+        payload = f"GET/api/v1/margin-mode?symbol={symbol}"
         headers = signer.headers(payload)
-        logger.info(f"Headers (overview): {headers}")
-        response = requests.request('get', url, headers=headers)
+        logger.info(f"Headers (margin-mode): {headers}")
+        response = requests.get(url, headers=headers)
         data = response.json()
-        logger.info(f"API yanıtı (overview): {data}")
+        logger.info(f"Margin Mode yanıtı: {data}")
         
         if data.get('code') == '200000':
-            accounts = data.get('data', {}).get('accounts', [])
-            usdt_balance = None
-            for account in accounts:
-                currency = account.get('currency', 'Bilinmeyen')
-                equity = account.get('accountEquity', 0)
-                available = account.get('availableBalance', 0)
-                logger.info(f"Hesap: {account.get('accountName')} | Para Birimi: {currency} | Toplam Bakiye: {equity} | Kullanılabilir: {available}")
-                
-                if currency == 'USDT':
-                    logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {equity} | Kullanılabilir: {available} ***")
-                    usdt_balance = available
-            
-            if usdt_balance is None:
-                logger.warning("USDT bakiyesi bulunamadı (overview).")
-            
-            return usdt_balance
+            margin_mode = data.get('data', {}).get('marginMode', 'Bilinmeyen')
+            logger.info(f"*** {symbol} Margin Modu: {margin_mode} ***")
+            return margin_mode
         else:
-            logger.error(f"Bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            logger.error(f"Margin modu kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
             return None
     except Exception as e:
-        logger.error(f"Hata (overview): {str(e)}")
+        logger.error(f"Margin modu hatası: {str(e)}")
         return None
 
-# Bakiye kontrol (account-overview, USD-M için)
+# Margin modu değiştirme
+def switch_margin_mode(symbol="ETHUSDTM", mode="ISOLATED"):
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/switch-margin-mode"
+        order_data = {"symbol": symbol, "marginMode": mode}
+        payload = "POST" + "/api/v1/switch-margin-mode" + json.dumps(order_data)
+        headers = signer.headers(payload)
+        logger.info(f"Headers (switch-margin-mode): {headers}")
+        response = requests.post(url, headers=headers, json=order_data)
+        data = response.json()
+        logger.info(f"Switch Margin Mode yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            logger.info(f"*** {symbol} Margin Modu {mode} olarak değiştirildi ***")
+            return True
+        else:
+            logger.error(f"Margin modu değiştirme başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            return False
+    except Exception as e:
+        logger.error(f"Margin modu değiştirme hatası: {str(e)}")
+        return False
+
+# Bakiye kontrol (USD-M)
 def check_usdm_balance():
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
@@ -116,66 +126,6 @@ def check_usdm_balance():
             return None
     except Exception as e:
         logger.error(f"Hata (usdm): {str(e)}")
-        return None
-
-# Çekilebilir margin kontrol
-def check_max_withdraw_margin():
-    try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/max-withdraw-margin"
-        payload = "GET" + "/api/v1/max-withdraw-margin"
-        headers = signer.headers(payload)
-        logger.info(f"Headers (max-withdraw-margin): {headers}")
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        logger.info(f"Max Withdraw Margin yanıtı: {data}")
-        
-        if data.get('code') == '200000':
-            usdt_balance = data.get('data', {}).get('availableBalance', 0)
-            logger.info(f"*** Çekilebilir USDT Bakiyesi: {usdt_balance} ***")
-            return usdt_balance
-        else:
-            logger.error(f"Max Withdraw Margin başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-            return None
-    except Exception as e:
-        logger.error(f"Max Withdraw Margin hatası: {str(e)}")
-        return None
-
-# Ledger kontrol
-def check_ledger():
-    try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/account-ledgers?currency=USDT"
-        payload = "GET" + "/api/v1/account-ledgers?currency=USDT"
-        headers = signer.headers(payload)
-        logger.info(f"Headers (ledger): {headers}")
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        logger.info(f"Ledger yanıtı: {data}")
-        
-        if data.get('code') == '200000':
-            ledgers = data.get('data', {}).get('items', [])
-            usdt_balance = None
-            for ledger in ledgers:
-                amount = ledger.get('amount', 0)
-                context = ledger.get('context', {})
-                biz_type = ledger.get('bizType', 'Bilinmeyen')
-                logger.info(f"İşlem: {biz_type} | Miktar: {amount} | Detay: {context}")
-                if biz_type == 'TRANSFER' and amount > 0:
-                    usdt_balance = amount
-                    logger.info(f"*** USDT Transfer Bulundu! Miktar: {amount} ***")
-            
-            if not ledgers:
-                logger.warning("Hiç ledger kaydı bulunamadı.")
-            if usdt_balance is None:
-                logger.warning("USDT transfer kaydı bulunamadı.")
-            
-            return usdt_balance
-        else:
-            logger.error(f"Ledger kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-            return None
-    except Exception as e:
-        logger.error(f"Ledger hatası: {str(e)}")
         return None
 
 # ETH fiyatını alma
@@ -203,23 +153,23 @@ def open_position():
         if not funding_rate:
             logger.warning("Fonlama oranı alınamadı, devam ediliyor.")
         
-        # Bakiye kontrolü (USD-M öncelikli)
+        # Bakiye kontrolü
         usdt_balance = check_usdm_balance()
-        if usdt_balance is None or usdt_balance < 11:
-            logger.warning("account-overview ile USDT bulunamadı, account-overview-all kontrol ediliyor.")
-            usdt_balance = check_balance()
-        
-        if usdt_balance is None or usdt_balance < 11:
-            logger.warning("account-overview-all ile USDT bulunamadı, max-withdraw-margin kontrol ediliyor.")
-            usdt_balance = check_max_withdraw_margin()
-        
-        if usdt_balance is None or usdt_balance < 11:
-            logger.warning("max-withdraw-margin ile USDT bulunamadı, ledger kontrol ediliyor.")
-            usdt_balance = check_ledger()
-        
         if usdt_balance is None or usdt_balance < 11:
             logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
             return {"error": "Yetersiz bakiye"}
+        
+        # Margin modu kontrol
+        margin_mode = check_margin_mode()
+        if margin_mode is None:
+            logger.warning("Margin modu alınamadı, ISOLATED deneniyor.")
+            margin_mode = "ISOLATED"
+        
+        if margin_mode != "ISOLATED":
+            logger.info(f"Margin modu {margin_mode}, ISOLATED moduna geçiliyor.")
+            if not switch_margin_mode(mode="ISOLATED"):
+                logger.error("Margin modu ISOLATED yapılamadı.")
+                return {"error": "Margin modu değiştirilemedi"}
         
         # ETH fiyatını al
         eth_price = get_eth_price()
@@ -243,7 +193,7 @@ def open_position():
             "leverage": str(leverage),
             "type": "market",
             "size": size,
-            "marginMode": "CROSS"
+            "marginMode": "ISOLATED"
         }
         
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
