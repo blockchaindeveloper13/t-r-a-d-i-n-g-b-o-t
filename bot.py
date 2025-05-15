@@ -59,42 +59,123 @@ def get_funding_rate(symbol="ETHUSDTM"):
         logger.error(f"Fonlama oranı hatası: {str(e)}")
         return None
 
-# Pozisyon ve bakiye kontrol
-def check_positions(currency="USDT"):
+# Bakiye kontrol (account-overview-all)
+def check_balance():
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/positions?currency={currency}"
-        payload = f"GET/api/v1/positions?currency={currency}"
+        url = "https://api-futures.kucoin.com/api/v1/account-overview-all"
+        payload = "GET" + "/api/v1/account-overview-all"
         headers = signer.headers(payload)
-        logger.info(f"Headers: {headers}")
-        response = requests.get(url, headers=headers)
+        logger.info(f"Headers (overview): {headers}")
+        response = requests.request('get', url, headers=headers)
         data = response.json()
-        logger.info(f"API yanıtı: {data}")
+        logger.info(f"API yanıtı (overview): {data}")
         
         if data.get('code') == '200000':
-            positions = data.get('data', [])
+            accounts = data.get('data', {}).get('accounts', [])
             usdt_balance = None
-            for position in positions:
-                symbol = position.get('symbol', 'Bilinmeyen')
-                settle_currency = position.get('settleCurrency', 'Bilinmeyen')
-                pos_margin = position.get('posMargin', 0)
-                logger.info(f"Sembol: {symbol} | Para Birimi: {settle_currency} | Pozisyon Margin: {pos_margin}")
+            for account in accounts:
+                currency = account.get('currency', 'Bilinmeyen')
+                equity = account.get('accountEquity', 0)
+                available = account.get('availableBalance', 0)
+                logger.info(f"Hesap: {account.get('accountName')} | Para Birimi: {currency} | Toplam Bakiye: {equity} | Kullanılabilir: {available}")
                 
-                if settle_currency == 'USDT':
-                    logger.info(f"*** USDT Pozisyonu Bulundu! Margin: {pos_margin} ***")
-                    usdt_balance = pos_margin
+                if currency == 'USDT':
+                    logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {equity} | Kullanılabilir: {available} ***")
+                    usdt_balance = available
             
-            if not positions:
-                logger.warning("Hiç pozisyon bulunamadı.")
             if usdt_balance is None:
-                logger.warning("USDT pozisyonu veya margin bulunamadı.")
+                logger.warning("USDT bakiyesi bulunamadı (overview).")
             
             return usdt_balance
         else:
-            logger.error(f"Pozisyon kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            logger.error(f"Bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
             return None
     except Exception as e:
-        logger.error(f"Hata: {str(e)}")
+        logger.error(f"Hata (overview): {str(e)}")
+        return None
+
+# Bakiye kontrol (account-overview, USD-M için)
+def check_usdm_balance():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/account-overview?currency=USDT"
+        payload = "GET" + "/api/v1/account-overview?currency=USDT"
+        headers = signer.headers(payload)
+        logger.info(f"Headers (usdm): {headers}")
+        response = requests.request('get', url, headers=headers)
+        data = response.json()
+        logger.info(f"API yanıtı (usdm): {data}")
+        
+        if data.get('code') == '200000':
+            usdt_balance = data.get('data', {}).get('availableBalance', 0)
+            logger.info(f"*** USD-M USDT Bakiyesi Bulundu! Kullanılabilir: {usdt_balance} ***")
+            return usdt_balance
+        else:
+            logger.error(f"USD-M bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
+    except Exception as e:
+        logger.error(f"Hata (usdm): {str(e)}")
+        return None
+
+# Çekilebilir margin kontrol
+def check_max_withdraw_margin():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/max-withdraw-margin"
+        payload = "GET" + "/api/v1/max-withdraw-margin"
+        headers = signer.headers(payload)
+        logger.info(f"Headers (max-withdraw-margin): {headers}")
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        logger.info(f"Max Withdraw Margin yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            usdt_balance = data.get('data', {}).get('availableBalance', 0)
+            logger.info(f"*** Çekilebilir USDT Bakiyesi: {usdt_balance} ***")
+            return usdt_balance
+        else:
+            logger.error(f"Max Withdraw Margin başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
+    except Exception as e:
+        logger.error(f"Max Withdraw Margin hatası: {str(e)}")
+        return None
+
+# Ledger kontrol
+def check_ledger():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/account-ledgers?currency=USDT"
+        payload = "GET" + "/api/v1/account-ledgers?currency=USDT"
+        headers = signer.headers(payload)
+        logger.info(f"Headers (ledger): {headers}")
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        logger.info(f"Ledger yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            ledgers = data.get('data', {}).get('items', [])
+            usdt_balance = None
+            for ledger in ledgers:
+                amount = ledger.get('amount', 0)
+                context = ledger.get('context', {})
+                biz_type = ledger.get('bizType', 'Bilinmeyen')
+                logger.info(f"İşlem: {biz_type} | Miktar: {amount} | Detay: {context}")
+                if biz_type == 'TRANSFER' and amount > 0:
+                    usdt_balance = amount
+                    logger.info(f"*** USDT Transfer Bulundu! Miktar: {amount} ***")
+            
+            if not ledgers:
+                logger.warning("Hiç ledger kaydı bulunamadı.")
+            if usdt_balance is None:
+                logger.warning("USDT transfer kaydı bulunamadı.")
+            
+            return usdt_balance
+        else:
+            logger.error(f"Ledger kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
+    except Exception as e:
+        logger.error(f"Ledger hatası: {str(e)}")
         return None
 
 # ETH fiyatını alma
@@ -122,8 +203,20 @@ def open_position():
         if not funding_rate:
             logger.warning("Fonlama oranı alınamadı, devam ediliyor.")
         
-        # Pozisyon ve bakiye kontrol
-        usdt_balance = check_positions()
+        # Bakiye kontrolü (USD-M öncelikli)
+        usdt_balance = check_usdm_balance()
+        if usdt_balance is None or usdt_balance < 11:
+            logger.warning("account-overview ile USDT bulunamadı, account-overview-all kontrol ediliyor.")
+            usdt_balance = check_balance()
+        
+        if usdt_balance is None or usdt_balance < 11:
+            logger.warning("account-overview-all ile USDT bulunamadı, max-withdraw-margin kontrol ediliyor.")
+            usdt_balance = check_max_withdraw_margin()
+        
+        if usdt_balance is None or usdt_balance < 11:
+            logger.warning("max-withdraw-margin ile USDT bulunamadı, ledger kontrol ediliyor.")
+            usdt_balance = check_ledger()
+        
         if usdt_balance is None or usdt_balance < 11:
             logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
             return {"error": "Yetersiz bakiye"}
@@ -150,7 +243,7 @@ def open_position():
             "leverage": str(leverage),
             "type": "market",
             "size": size,
-            "marginMode": "CROSS"  # Cross margin, dökümana uygun
+            "marginMode": "CROSS"
         }
         
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
@@ -172,14 +265,16 @@ def open_position():
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"error": str(e)}
 
-# Ana program
+# Ana döngü
 if __name__ == "__main__":
-    try:
-        result = open_position()
-        logger.info(f"Sonuç: {result}")
-        if result.get('code') == '200000':
-            logger.info("Pozisyon açıldı, bot durduruluyor.")
-        else:
-            logger.error("Pozisyon açılamadı, lütfen logları kontrol edin.")
-    except Exception as e:
-        logger.error(f"Başlatma hatası: {str(e)}")
+    while True:
+        try:
+            result = open_position()
+            logger.info(f"Sonuç: {result}")
+            if result.get('code') == '200000':
+                logger.info("Pozisyon açıldı, bot durduruluyor.")
+                break
+            time.sleep(60)  # Hata durumunda 60 saniye bekle
+        except Exception as e:
+            logger.error(f"Döngü hatası: {str(e)}")
+            time.sleep(60)
