@@ -322,76 +322,108 @@ async def send_telegram_message(message):
         logger.error(f"Telegram hatası: {str(e)}")
 
 # Pozisyon açma
-async def open_position(side, usdt_balance):
+async def open_position(signal, usdt_balance):
     try:
-        contract = get_contract_details()
-        multiplier = contract["multiplier"]
-        min_order_size = contract["min_order_size"]
-        max_leverage = contract["max_leverage"]
-        leverage = min(LEVERAGE, max_leverage)
+        # Isolated margin konfigürasyonunu kontrol et
+        url = "https://api-futures.kucoin.com/api/v1/isolated/symbols"
+        headers = {
+            "KC-API-KEY": KUCOIN_API_KEY,
+            "KC-API-SIGN": generate_signature({}),  # Boş params için imza
+            "KC-API-TIMESTAMP": str(int(time.time() * 1000)),
+            "KC-API-PASSPHRASE": KUCOIN_PASSPHRASE
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        symbols_response = response.json()
         
+        if symbols_response['code'] != '200000':
+            logger.error(f"Isolated margin konfigürasyon hatası: {symbols_response['msg']}")
+            return {"success": False, "error": symbols_response['msg']}
+        
+        # ETHUSDTM’nin isolated margin desteklediğini doğrula
+        symbol_config = next((s for s in symbols_response['data'] if s['symbol'] == SYMBOL), None)
+        if not symbol_config or not symbol_config['tradeEnable']:
+            logger.error(f"{SYMBOL} isolated margin için uygun değil")
+            return {"success": False, "error": f"{SYMBOL} isolated margin desteklemiyor"}
+        
+        logger.info(f"{SYMBOL} isolated margin konfigürasyonu: maxLeverage={symbol_config['maxLeverage']}")
+
+        # Mevcut margin modunu kontrol et
+        url = "https://api-futures.kucoin.com/api/v1/margin/mode"
+        params = {"symbol": SYMBOL}
+        headers["KC-API-SIGN"] = generate_signature(params)
+        headers["KC-API-TIMESTAMP"] = str(int(time.time() * 1000))
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
+        margin_mode_response = response.json()
+        
+        if margin_mode_response['code'] != '200000':
+            logger.error(f"Margin modu kontrol hatası: {margin_mode_response['msg']}")
+            return {"success": False, "error": margin_mode_response['msg']}
+        
+        current_mode = margin_mode_response['data']['marginMode']
+        if current_mode != 'ISOLATED':
+            # Margin modunu isolated’a çevir
+            set_margin_response = requests.post(
+                url,
+                json={"symbol": SYMBOL, "marginMode": "ISOLATED"},
+                headers=headers
+            ).json()
+            if set_margin_response['code'] != '200000':
+                logger.error(f"Margin modu değiştirme hatası: {set_margin_response['msg']}")
+                return {"success": False, "error": set_margin_response['msg']}
+            logger.info(f"Margin modu ISOLATED olarak ayarlandı: {SYMBOL}")
+
+        # Fiyat al
         eth_price = get_eth_price()
         if not eth_price:
-            logger.error("ETH fiyatı alınamadı")
-            return {"error": "Fiyat alınamadı"}
+            return {"success": False, "error": "Fiyat alınamadı"}
         
-        total_value = usdt_balance * leverage
-        size = max(min_order_size, int(total_value / (eth_price * multiplier)))
-        position_value = size * eth_price * multiplier
-        required_margin = position_value / leverage
+        # Pozisyon büyüklüğü hesapla
+        position_value = usdt_balance * LEVERAGE * 0.1  # %10 margin
+        size = int(position_value / eth_price * 1000)  # Kontrat miktarı
         
-        if required_margin > usdt_balance:
-            logger.error(f"Yetersiz bakiye: Gerekli {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
-            return {"error": "Yetersiz bakiye"}
+        # Stop-loss ve take-profit
+        stop_loss_pct = 0.02  # %2
+        take_profit_pct = 0.005  # %0.5
+        stop_loss_price = eth_price * (1 - stop_loss_pct) if signal == "buy" else eth_price * (1 + stop_loss_pct)
+        take_profit_price = eth_price * (1 + take_profit_pct) if signal == "buy" else eth_price * (1 - take_profit_pct)
         
-        if side == "buy":
-            stop_loss_price = eth_price * (1 - STOP_LOSS_PCT)
-            take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT)
-        else:
-            stop_loss_price = eth_price * (1 + STOP_LOSS_PCT)
-            take_profit_price = eth_price * (1 - TAKE_PROFIT_PCT)
-        
-        order_data = {
-            "clientOid": str(uuid.uuid4()),
-            "side": side,
+        # Pozisyon aç
+        side = "buy" if signal == "buy" else "sell"
+        order_params = {
             "symbol": SYMBOL,
-            "leverage": str(leverage),
+            "side": side,
+            "leverage": LEVERAGE,
             "type": "market",
             "size": size,
-            "marginMode": "isolated",
-            "stopLossPrice": round(stop_loss_price, 2),
-            "takeProfitPrice": round(take_profit_price, 2)
+            "marginMode": "ISOLATED",
+            "stopLossPrice": str(round(stop_loss_price, 2)),
+            "takeProfitPrice": str(round(take_profit_price, 2))
         }
+        response = client.create_market_order(**order_params)
         
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/orders"
-        payload = "POST" + "/api/v1/orders" + json.dumps(order_data)
-        headers = signer.headers(payload)
-        response = requests.post(url, headers=headers, json=order_data)
-        data = response.json()
-        logger.info(f"Pozisyon açma yanıtı: {data}")
-        
-        if data.get('code') == '200000':
-            order_id = data.get('data', {}).get('orderId')
-            message = (
+        if response['code'] == '200000':
+            logger.info(f"Pozisyon açıldı: {side}, fiyat: {eth_price}, miktar: {size}")
+            await send_telegram_message(
                 f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
                 f"Yön: {'Long' if side == 'buy' else 'Short'}\n"
                 f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
                 f"Kontrat: {size}\n"
-                f"Kaldıraç: {leverage}x\n"
+                f"Kaldıraç: {LEVERAGE}x\n"
                 f"Pozisyon Değeri: {position_value:.2f} USDT\n"
                 f"Stop Loss: {stop_loss_price:.2f} USDT\n"
                 f"Take Profit: {take_profit_price:.2f} USDT\n"
                 f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             )
-            await send_telegram_message(message)
-            logger.info(f"Pozisyon açıldı! Sipariş ID: {order_id}")
-            return {"success": True, "order_id": order_id}
-        logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
-        return {"error": data.get('msg', 'Bilinmeyen hata')}
+            return {"success": True}
+        else:
+            logger.error(f"Pozisyon açılamadı: {response['msg']}")
+            return {"success": False, "error": response['msg']}
+    
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
-        return {"error": str(e)}
+        return {"success": False, "error": str(e)}
 
 # Ana döngü
 async def main():
