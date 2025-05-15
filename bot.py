@@ -425,6 +425,34 @@ async def open_position(signal, usdt_balance):
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"success": False, "error": str(e)}
 
+def generate_signature(params, endpoint, method, timestamp):
+    """
+    KuCoin API için HMAC-SHA256 imzası oluşturur.
+    params: İstek parametreleri (dict veya query string)
+    endpoint: API endpoint’i (ör. /api/v1/margin/mode)
+    method: HTTP metodu (GET, POST, vb.)
+    timestamp: Unix milisaniye
+    """
+    try:
+        api_secret = KUCOIN_API_SECRET  # .env’de tanımlı olmalı
+        str_to_sign = f"{timestamp}{method}{endpoint}"
+        
+        if method == "GET" and params:
+            query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            str_to_sign += f"?{query_string}"
+        elif method == "POST" and params:
+            str_to_sign += json.dumps(params)
+        
+        signature = hmac.new(
+            api_secret.encode("utf-8"),
+            str_to_sign.encode("utf-8"),
+            hashlib.sha256
+        ).digest()
+        return base64.b64encode(signature).decode("utf-8")
+    except Exception as e:
+        logger.error(f"İmza oluşturma hatası: {str(e)}")
+        return None
+
 # Ana döngü
 async def main():
     while True:
