@@ -114,9 +114,11 @@ def calculate_indicators():
         return None
 
 # Grok sinyal
+# Grok sinyal
 def get_grok_signal(indicators, deepsearch_result):
     try:
         if not indicators or not deepsearch_result:
+            logger.warning(f"Grok sinyal: Veri eksik, indicators: {indicators}, deepsearch_result: {deepsearch_result}")
             return "bekle"
         
         score = 0
@@ -134,13 +136,13 @@ def get_grok_signal(indicators, deepsearch_result):
             score -= 0.3
         
         logger.info(f"Grok sinyal puanı: {score}")
-        if score > 0.5:
+        if score >= 0.3:  # > yerine >=
             return "buy"
-        elif score < -0.5:
+        elif score <= -0.3:  # < yerine <=
             return "sell"
         return "bekle"
     except Exception as e:
-        logger.error(f"Grok sinyal hatası: {str(e)}")
+        logger.error(f"Grok sinyal hatası: {str(e)}, indicators: {indicators}, deepsearch_result: {deepsearch_result}")
         return "bekle"
 
 # DeepSearch simülasyon
