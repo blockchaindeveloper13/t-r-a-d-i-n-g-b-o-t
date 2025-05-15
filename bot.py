@@ -5,6 +5,7 @@ import time
 import http.client
 import json
 import logging
+import requests
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,20 +38,25 @@ class KcSigner:
             "Content-Type": "application/json"
         }
 
-# Test fonksiyonu
-def test_endpoint(domain, endpoint, params):
+# Test fonksiyonu (GET ve POST için)
+def test_endpoint(domain, endpoint, params, method="GET", data=None):
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        conn = http.client.HTTPSConnection(domain)
-        payload = "GET" + endpoint + params
+        url = f"https://{domain}{endpoint}"
+        payload = method + endpoint + (params if method == "GET" else (json.dumps(data) if data else ""))
         headers = signer.headers(payload)
-        logger.info(f"Domain: {domain}, Endpoint: {endpoint}, Headers: {headers}")
-        conn.request("GET", endpoint, '', headers)
-        res = conn.getresponse()
-        data = json.loads(res.read().decode("utf-8"))
+        logger.info(f"Domain: {domain}, Endpoint: {endpoint}, Method: {method}, Headers: {headers}")
+        
+        if method == "GET":
+            response = requests.request('get', url, headers=headers)
+        else:  # POST
+            response = requests.request('post', url, headers=headers, data=json.dumps(data) if data else None)
+        
+        logger.info(f"Status Code: {response.status_code}")
+        data = response.json()
         logger.info(f"API yanıtı: {data}")
-        if data['code'] == '200000':
-            logger.info(f"Bağlantı başarılı! Yanıt: {data['data']}")
+        if data.get('code') == '200000':
+            logger.info(f"Bağlantı başarılı! Yanıt: {data.get('data')}")
         else:
             logger.error(f"Bağlantı başarısız: {data.get('msg', 'Bilinmeyen hata')}")
         return data
@@ -58,16 +64,32 @@ def test_endpoint(domain, endpoint, params):
         logger.error(f"Test hatası: {str(e)}")
         return {"error": str(e)}
 
-# Test endpoint’leri (v1)
+# Test endpoint’leri
 endpoints = [
-    {"domain": "api-futures.kucoin.com", "endpoint": "/api/v1/position?symbol=ETHUSDTM", "params": "symbol=ETHUSDTM"},
-    {"domain": "api-futures.kucoin.com", "endpoint": "/api/v1/account-overview-all", "params": ""},
-    {"domain": "api-futures.kucoin.com", "endpoint": "/api/v1/ticker?symbol=ETHUSDTM", "params": "symbol=ETHUSDTM"},
-    {"domain": "api-futures.kucoin.com", "endpoint": "/api/v1/contracts/active", "params": ""},
-    {"domain": "api.kucoin.com", "endpoint": "/api/v1/accounts", "params": ""}
+    {
+        "domain": "api-futures.kucoin.com",
+        "endpoint": "/api/v1/position?symbol=ETHUSDTM",
+        "params": "symbol=ETHUSDTM",
+        "method": "GET",
+        "data": None
+    },
+    {
+        "domain": "api-futures.kucoin.com",
+        "endpoint": "/api/v1/deposit-address",
+        "params": "",
+        "method": "POST",
+        "data": {"currency": "USDT"}
+    },
+    {
+        "domain": "api-futures.kucoin.com",
+        "endpoint": "/api/v1/contracts/active",
+        "params": "",
+        "method": "GET",
+        "data": None
+    }
 ]
 
 if __name__ == "__main__":
     for test in endpoints:
-        logger.info(f"Testing: {test['domain']} {test['endpoint']}")
-        test_endpoint(test['domain'], test['endpoint'], test['params'])
+        logger.info(f"Testing: {test['domain']} {test['endpoint']} ({test['method']})")
+        test_endpoint(test['domain'], test['endpoint'], test['params'], test['method'], test['data'])
