@@ -59,51 +59,30 @@ def get_funding_rate(symbol="ETHUSDTM"):
         logger.error(f"Fonlama oranı hatası: {str(e)}")
         return None
 
-# Margin modu kontrol
-def check_margin_mode(symbol="ETHUSDTM"):
+# Kontrat detaylarını alma
+def get_contract_details(symbol="ETHUSDTM"):
     try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/margin-mode?symbol={symbol}"
-        payload = f"GET/api/v1/margin-mode?symbol={symbol}"
-        headers = signer.headers(payload)
-        logger.info(f"Headers (margin-mode): {headers}")
-        response = requests.get(url, headers=headers)
+        url = "https://api-futures.kucoin.com/api/v1/contracts/active"
+        response = requests.get(url)
         data = response.json()
-        logger.info(f"Margin Mode yanıtı: {data}")
+        logger.info(f"Contract Details yanıtı: {data}")
         
         if data.get('code') == '200000':
-            margin_mode = data.get('data', {}).get('marginMode', 'Bilinmeyen')
-            logger.info(f"*** {symbol} Margin Modu: {margin_mode} ***")
-            return margin_mode
+            for contract in data.get('data', []):
+                if contract.get('symbol') == symbol:
+                    logger.info(f"*** {symbol} Kontrat Detayları ***")
+                    logger.info(f"Multiplier: {contract.get('multiplier')}")
+                    logger.info(f"Min Order Size: {contract.get('minOrderQty')}")
+                    logger.info(f"Max Leverage: {contract.get('maxLeverage')}")
+                    return contract
+            logger.warning(f"{symbol} kontratı bulunamadı.")
+            return None
         else:
-            logger.error(f"Margin modu kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            logger.error(f"Kontrat detayları alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
             return None
     except Exception as e:
-        logger.error(f"Margin modu hatası: {str(e)}")
+        logger.error(f"Kontrat detayları hatası: {str(e)}")
         return None
-
-# Margin modu değiştirme
-def switch_margin_mode(symbol="ETHUSDTM", mode="ISOLATED"):
-    try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/switch-margin-mode"
-        order_data = {"symbol": symbol, "marginMode": mode}
-        payload = "POST" + "/api/v1/switch-margin-mode" + json.dumps(order_data)
-        headers = signer.headers(payload)
-        logger.info(f"Headers (switch-margin-mode): {headers}")
-        response = requests.post(url, headers=headers, json=order_data)
-        data = response.json()
-        logger.info(f"Switch Margin Mode yanıtı: {data}")
-        
-        if data.get('code') == '200000':
-            logger.info(f"*** {symbol} Margin Modu {mode} olarak değiştirildi ***")
-            return True
-        else:
-            logger.error(f"Margin modu değiştirme başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-            return False
-    except Exception as e:
-        logger.error(f"Margin modu değiştirme hatası: {str(e)}")
-        return False
 
 # Bakiye kontrol (USD-M)
 def check_usdm_balance():
@@ -159,17 +138,17 @@ def open_position():
             logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
             return {"error": "Yetersiz bakiye"}
         
-        # Margin modu kontrol
-        margin_mode = check_margin_mode()
-        if margin_mode is None:
-            logger.warning("Margin modu alınamadı, ISOLATED deneniyor.")
-            margin_mode = "ISOLATED"
-        
-        if margin_mode != "ISOLATED":
-            logger.info(f"Margin modu {margin_mode}, ISOLATED moduna geçiliyor.")
-            if not switch_margin_mode(mode="ISOLATED"):
-                logger.error("Margin modu ISOLATED yapılamadı.")
-                return {"error": "Margin modu değiştirilemedi"}
+        # Kontrat detayları
+        contract = get_contract_details()
+        if not contract:
+            logger.warning("Kontrat detayları alınamadı, varsayılan değerler kullanılıyor.")
+            multiplier = 0.001
+            min_order_size = 1
+            max_leverage = 20
+        else:
+            multiplier = float(contract.get('multiplier', 0.001))
+            min_order_size = int(contract.get('minOrderQty', 1))
+            max_leverage = int(contract.get('maxLeverage', 20))
         
         # ETH fiyatını al
         eth_price = get_eth_price()
@@ -177,20 +156,35 @@ def open_position():
             logger.error("ETH fiyatı alınamadı, pozisyon açılamıyor.")
             return {"error": "Fiyat alınamadı"}
         
-        # Pozisyon parametreleri
+        # 12x kaldıraç denemesi
         usdt_amount = 11
-        leverage = 3
+        leverage = min(12, max_leverage)  # Maksimum kaldıracı aşma
         total_value = usdt_amount * leverage
-        multiplier = 0.001
-        size = int(total_value / (eth_price * multiplier))
-        logger.info(f"Pozisyon: {size} kontrat (Toplam Değer: {total_value} USDT, Fiyat: {eth_price} USDT)")
+        size = max(min_order_size, int(total_value / (eth_price * multiplier)))
+        position_value = size * eth_price * multiplier
+        required_margin = position_value / leverage
+        logger.info(f"12x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT, Fiyat: {eth_price} USDT)")
+        
+        if required_margin > usdt_balance:
+            logger.warning(f"12x kaldıraç için yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            # 5x kaldıraçla daha küçük pozisyon
+            leverage = 5
+            total_value = usdt_amount * leverage
+            size = max(min_order_size, int(total_value / (eth_price * multiplier) / 2))  # Daha küçük
+            position_value = size * eth_price * multiplier
+            required_margin = position_value / leverage
+            logger.info(f"5x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT)")
+        
+        if required_margin > usdt_balance:
+            logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            return {"error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
         # Sipariş verisi
         order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "buy",
             "symbol": "ETHUSDTM",
-            "leverage": str(leverage),
+            "leverage": leverage,
             "type": "market",
             "size": size,
             "marginMode": "ISOLATED"
@@ -201,6 +195,7 @@ def open_position():
         payload = "POST" + "/api/v1/orders" + json.dumps(order_data)
         headers = signer.headers(payload)
         logger.info(f"Headers: {headers}")
+        logger.info(f"Sipariş verisi: {order_data}")
         response = requests.post(url, headers=headers, json=order_data)
         data = response.json()
         logger.info(f"Pozisyon açma yanıtı: {data}")
