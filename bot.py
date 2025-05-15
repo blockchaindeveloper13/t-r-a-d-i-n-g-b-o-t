@@ -114,7 +114,6 @@ def calculate_indicators():
         return None
 
 # Grok sinyal
-# Grok sinyal
 def get_grok_signal(indicators, deepsearch_result):
     try:
         if not indicators or not deepsearch_result:
@@ -136,9 +135,9 @@ def get_grok_signal(indicators, deepsearch_result):
             score -= 0.3
         
         logger.info(f"Grok sinyal puanı: {score}")
-        if score >= 0.3:  # > yerine >=
+        if score >= 0.3:
             return "buy"
-        elif score <= -0.3:  # < yerine <=
+        elif score <= -0.3:
             return "sell"
         return "bekle"
     except Exception as e:
@@ -153,21 +152,18 @@ def run_deepsearch():
             logger.info("DeepSearch: Son sonucu kullanıyor")
             return last_deepsearch_result
         
-        # RSS feed’leri
         feeds = [
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
             "https://cointelegraph.com/rss"
         ]
         
-        # Kripto odaklı haberleri topla
         crypto_news = []
         for feed_url in feeds:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:10]:  # Her feed’den max 10 haber
+            for entry in feed.entries[:10]:
                 title = entry.get("title", "").lower()
                 summary = entry.get("summary", "").lower()
                 text = title + " " + summary
-                # Kripto piyasası haberleri
                 if any(keyword in text for keyword in ["bitcoin", "ethereum", "crypto", "blockchain"]):
                     if not any(keyword in text for keyword in ["celebrity", "gossip", "entertainment"]):
                         crypto_news.append({
@@ -183,35 +179,27 @@ def run_deepsearch():
             last_deepsearch_time = time.time()
             return last_deepsearch_result
         
-        # VaderSentiment ile bağlam odaklı analiz
         analyzer = SentimentIntensityAnalyzer()
         sentiment_scores = []
         reg_spec_contexts = []
         for news in crypto_news:
             text = f"{news['title']}: {news['summary']}"
             score = analyzer.polarity_scores(text)["compound"]
-            
-            # Regülasyon ve spekülasyon bağlamı
             reg_keywords = ["regulation", "sec", "law", "policy", "compliance"]
             spec_keywords = ["speculation", "rally", "crash", "bubble", "surge", "dip"]
             is_regulation = any(keyword in news["text"] for keyword in reg_keywords)
-            is_speculation = any(keyword in news["text"] for keyword in spec_keywords)
-            
-            # Bağlama göre hafif ağırlık
+            is_speculation = any(keyword in text for keyword in spec_keywords)
             if is_regulation:
-                score *= 1.1  # Hafif boost, bağlam ön planda
+                score *= 1.1
                 reg_spec_contexts.append(f"Regulation: {news['title']}")
             if is_speculation:
-                score *= 1.05  # Daha hafif boost
+                score *= 1.05
                 reg_spec_contexts.append(f"Speculation: {news['title']}")
-            
             sentiment_scores.append(score)
         
-        # Ortalama skor ve sentiment
         avg_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
         sentiment = "Bullish" if avg_score > 0.1 else "Bearish" if avg_score < -0.1 else "Neutral"
         
-        # Loglama
         logger.info(f"DeepSearch: {len(crypto_news)} kripto haberi tarandı, sentiment: {sentiment}, ortalama skor: {avg_score:.3f}")
         logger.info(f"DeepSearch: Tarama başlıkları: {[news['title'] for news in crypto_news]}")
         if reg_spec_contexts:
@@ -224,7 +212,6 @@ def run_deepsearch():
     except Exception as e:
         logger.error(f"DeepSearch hatası: {str(e)}")
         return last_deepsearch_result if last_deepsearch_result else {"sentiment": "Neutral", "timestamp": time.time()}
-
 
 # Bakiye kontrol
 def check_usdm_balance():
@@ -321,40 +308,53 @@ async def send_telegram_message(message):
     except TelegramError as e:
         logger.error(f"Telegram hatası: {str(e)}")
 
+# Fonlama oranı
+def get_funding_rate():
+    try:
+        url = f"https://api-futures.kucoin.com/api/v1/funding-rate/{SYMBOL}"
+        response = requests.get(url)
+        data = response.json()
+        logger.info(f"Fonlama oranı yanıtı: {data}")
+        if data.get('code') == '200000':
+            return float(data.get('data', {}).get('fundingRate', 0))
+        logger.error(f"Fonlama oranı alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        return None
+    except Exception as e:
+        logger.error(f"Fonlama oranı hatası: {str(e)}")
+        return None
+
 # Pozisyon açma
 async def open_position(signal, usdt_balance):
     try:
-        # Isolated margin konfigürasyonunu kontrol et
-        url = "https://api-futures.kucoin.com/api/v1/isolated/symbols"
-        headers = {
-            "KC-API-KEY": KUCOIN_API_KEY,
-            "KC-API-SIGN": generate_signature({}),  # Boş params için imza
-            "KC-API-TIMESTAMP": str(int(time.time() * 1000)),
-            "KC-API-PASSPHRASE": KUCOIN_PASSPHRASE
-        }
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        symbols_response = response.json()
+        # Fonlama oranı (opsiyonel)
+        funding_rate = get_funding_rate()
+        if not funding_rate:
+            logger.warning("Fonlama oranı alınamadı, devam ediliyor.")
         
-        if symbols_response['code'] != '200000':
-            logger.error(f"Isolated margin konfigürasyon hatası: {symbols_response['msg']}")
-            return {"success": False, "error": symbols_response['msg']}
+        # Bakiye kontrolü
+        if usdt_balance is None or usdt_balance < 5:  # Minimum 5 USDT
+            logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
+            return {"success": False, "error": "Yetersiz bakiye"}
         
-        # ETHUSDTM’nin isolated margin desteklediğini doğrula
-        symbol_config = next((s for s in symbols_response['data'] if s['symbol'] == SYMBOL), None)
-        if not symbol_config or not symbol_config['tradeEnable']:
-            logger.error(f"{SYMBOL} isolated margin için uygun değil")
-            return {"success": False, "error": f"{SYMBOL} isolated margin desteklemiyor"}
+        # Kontrat detayları
+        contract = get_contract_details()
+        if not contract:
+            logger.warning("Kontrat detayları alınamadı, varsayılan değerler kullanılıyor.")
+            multiplier = 0.001
+            min_order_size = 1
+            max_leverage = 20
+        else:
+            multiplier = float(contract.get('multiplier', 0.001))
+            min_order_size = int(contract.get('minOrderQty', 1))
+            max_leverage = int(contract.get('maxLeverage', 20))
         
-        logger.info(f"{SYMBOL} isolated margin konfigürasyonu: maxLeverage={symbol_config['maxLeverage']}")
-
-        # Mevcut margin modunu kontrol et
+        # Margin modunu kontrol et ve isolated yap
         url = "https://api-futures.kucoin.com/api/v1/margin/mode"
+        timestamp = str(int(time.time() * 1000))
         params = {"symbol": SYMBOL}
-        headers["KC-API-SIGN"] = generate_signature(params)
-        headers["KC-API-TIMESTAMP"] = str(int(time.time() * 1000))
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        headers = signer.headers(f"GET/api/v1/margin/mode?symbol={SYMBOL}")
         response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
         margin_mode_response = response.json()
         
         if margin_mode_response['code'] != '200000':
@@ -363,12 +363,10 @@ async def open_position(signal, usdt_balance):
         
         current_mode = margin_mode_response['data']['marginMode']
         if current_mode != 'ISOLATED':
-            # Margin modunu isolated’a çevir
-            set_margin_response = requests.post(
-                url,
-                json={"symbol": SYMBOL, "marginMode": "ISOLATED"},
-                headers=headers
-            ).json()
+            payload = {"symbol": SYMBOL, "marginMode": "ISOLATED"}
+            headers = signer.headers(f"POST/api/v1/margin/mode{json.dumps(payload)}")
+            response = requests.post(url, json=payload, headers=headers)
+            set_margin_response = response.json()
             if set_margin_response['code'] != '200000':
                 logger.error(f"Margin modu değiştirme hatası: {set_margin_response['msg']}")
                 return {"success": False, "error": set_margin_response['msg']}
@@ -377,82 +375,80 @@ async def open_position(signal, usdt_balance):
         # Fiyat al
         eth_price = get_eth_price()
         if not eth_price:
+            logger.error("Fiyat alınamadı, pozisyon açılamıyor.")
             return {"success": False, "error": "Fiyat alınamadı"}
         
-        # Pozisyon büyüklüğü hesapla
-        position_value = usdt_balance * LEVERAGE * 0.1  # %10 margin
-        size = int(position_value / eth_price * 1000)  # Kontrat miktarı
+        # 10x kaldıraç denemesi
+        usdt_amount = usdt_balance  # Maksimum bakiyeyi kullan
+        leverage = min(10, max_leverage)
+        total_value = usdt_amount * leverage
+        size = max(min_order_size, int(total_value / (eth_price * multiplier)))
+        position_value = size * eth_price * multiplier
+        required_margin = position_value / leverage
+        logger.info(f"10x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT, Fiyat: {eth_price} USDT)")
+        
+        if required_margin > usdt_balance:
+            logger.warning(f"10x kaldıraç için yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            # 5x kaldıraçla daha küçük pozisyon
+            leverage = 5
+            total_value = usdt_amount * leverage
+            size = max(min_order_size, int(total_value / (eth_price * multiplier) / 2))
+            position_value = size * eth_price * multiplier
+            required_margin = position_value / leverage
+            logger.info(f"5x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT)")
+        
+        if required_margin > usdt_balance:
+            logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
         # Stop-loss ve take-profit
-        stop_loss_pct = 0.02  # %2
-        take_profit_pct = 0.005  # %0.5
-        stop_loss_price = eth_price * (1 - stop_loss_pct) if signal == "buy" else eth_price * (1 + stop_loss_pct)
-        take_profit_price = eth_price * (1 + take_profit_pct) if signal == "buy" else eth_price * (1 - take_profit_pct)
+        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
+        take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
         
-        # Pozisyon aç
-        side = "buy" if signal == "buy" else "sell"
-        order_params = {
+        # Sipariş verisi
+        order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": signal,
             "symbol": SYMBOL,
-            "side": side,
-            "leverage": LEVERAGE,
+            "leverage": leverage,
             "type": "market",
             "size": size,
             "marginMode": "ISOLATED",
             "stopLossPrice": str(round(stop_loss_price, 2)),
             "takeProfitPrice": str(round(take_profit_price, 2))
         }
-        response = client.create_market_order(**order_params)
         
-        if response['code'] == '200000':
-            logger.info(f"Pozisyon açıldı: {side}, fiyat: {eth_price}, miktar: {size}")
+        # KuCoin API isteği
+        url = "https://api-futures.kucoin.com/api/v1/orders"
+        payload = f"POST/api/v1/orders{json.dumps(order_data)}"
+        headers = signer.headers(payload)
+        logger.info(f"Headers: {headers}")
+        logger.info(f"Sipariş verisi: {order_data}")
+        response = requests.post(url, headers=headers, json=order_data)
+        data = response.json()
+        logger.info(f"Pozisyon açma yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {data.get('data', {}).get('orderId')}")
             await send_telegram_message(
                 f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-                f"Yön: {'Long' if side == 'buy' else 'Short'}\n"
+                f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
                 f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
                 f"Kontrat: {size}\n"
-                f"Kaldıraç: {LEVERAGE}x\n"
+                f"Kaldıraç: {leverage}x\n"
                 f"Pozisyon Değeri: {position_value:.2f} USDT\n"
                 f"Stop Loss: {stop_loss_price:.2f} USDT\n"
                 f"Take Profit: {take_profit_price:.2f} USDT\n"
                 f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             )
-            return {"success": True}
+            return {"success": True, "orderId": data.get('data', {}).get('orderId')}
         else:
-            logger.error(f"Pozisyon açılamadı: {response['msg']}")
-            return {"success": False, "error": response['msg']}
+            logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
+            return {"success": False, "error": data.get('msg', 'Bilinmeyen hata')}
     
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"success": False, "error": str(e)}
-
-def generate_signature(params, endpoint, method, timestamp):
-    """
-    KuCoin API için HMAC-SHA256 imzası oluşturur.
-    params: İstek parametreleri (dict veya query string)
-    endpoint: API endpoint’i (ör. /api/v1/margin/mode)
-    method: HTTP metodu (GET, POST, vb.)
-    timestamp: Unix milisaniye
-    """
-    try:
-        api_secret = KUCOIN_API_SECRET  # .env’de tanımlı olmalı
-        str_to_sign = f"{timestamp}{method}{endpoint}"
-        
-        if method == "GET" and params:
-            query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-            str_to_sign += f"?{query_string}"
-        elif method == "POST" and params:
-            str_to_sign += json.dumps(params)
-        
-        signature = hmac.new(
-            api_secret.encode("utf-8"),
-            str_to_sign.encode("utf-8"),
-            hashlib.sha256
-        ).digest()
-        return base64.b64encode(signature).decode("utf-8")
-    except Exception as e:
-        logger.error(f"İmza oluşturma hatası: {str(e)}")
-        return None
-
 # Ana döngü
 async def main():
     while True:
