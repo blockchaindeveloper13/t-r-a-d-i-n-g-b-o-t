@@ -384,7 +384,7 @@ async def open_position(signal, usdt_balance):
         take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
         logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f}")
         
-        # Sipariş verisi
+        # Pozisyon açma siparişi
         order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": signal,
@@ -393,12 +393,10 @@ async def open_position(signal, usdt_balance):
             "type": "limit",
             "price": str(round(eth_price, 2)),
             "size": size,
-            "marginMode": "ISOLATED",
-            "triggerStopDownPrice": round(stop_loss_price, 2),  # Stop-loss
-            "triggerStopUpPrice": round(take_profit_price, 2)   # Take-profit
+            "marginMode": "ISOLATED"
         }
         
-        # KuCoin API isteği
+        # KuCoin API isteği (pozisyon açma)
         url = "https://api-futures.kucoin.com/api/v1/orders"
         payload = f"POST/api/v1/orders{json.dumps(order_data)}"
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
@@ -409,8 +407,35 @@ async def open_position(signal, usdt_balance):
         data = response.json()
         logger.info(f"Pozisyon açma yanıtı: {data}")
         
-        if data.get('code') == '200000':
-            logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {data.get('data', {}).get('orderId')}")
+        if data.get('code') != '200000':
+            logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
+            return {"success": False, "error": data.get('msg', 'Bilinmeyen hata')}
+        
+        order_id = data.get('data', {}).get('orderId')
+        logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {order_id}")
+        
+        # Stop-loss ve take-profit siparişi
+        st_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "symbol": SYMBOL,
+            "side": "sell" if signal == "buy" else "buy",
+            "type": "market",
+            "size": size,
+            "stopLossPrice": round(stop_loss_price, 2),
+            "takeProfitPrice": round(take_profit_price, 2),
+            "marginMode": "ISOLATED"
+        }
+        
+        # KuCoin API isteği (stop-loss ve take-profit)
+        st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
+        st_payload = f"POST/api/v1/st-orders{json.dumps(st_order_data)}"
+        headers = signer.headers(st_payload)
+        st_response = requests.post(st_url, headers=headers, json=st_order_data)
+        st_data = st_response.json()
+        logger.info(f"Stop-loss/take-profit sipariş yanıtı: {st_data}")
+        
+        if st_data.get('code') == '200000':
+            logger.info("Stop-loss ve take-profit başarıyla ayarlandı")
             await send_telegram_message(
                 f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
                 f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
@@ -422,10 +447,10 @@ async def open_position(signal, usdt_balance):
                 f"Take Profit: {take_profit_price:.2f} USDT\n"
                 f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             )
-            return {"success": True, "orderId": data.get('data', {}).get('orderId')}
+            return {"success": True, "orderId": order_id}
         else:
-            logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
-            return {"success": False, "error": data.get('msg', 'Bilinmeyen hata')}
+            logger.error(f"Stop-loss/take-profit ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
+            return {"success": False, "error": f"Stop-loss/take-profit ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}"}
     
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
