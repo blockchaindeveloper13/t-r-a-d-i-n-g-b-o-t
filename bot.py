@@ -34,10 +34,11 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Sabit ayarlar
-SYMBOL = "ETHUSDTM"
+# Sabit ayarlar
+SYMBOL = "ETHUSDTM"  # BTCUSDTM olabilir, panelde kontrol et
 LEVERAGE = 10
 STOP_LOSS_PCT = 0.02  # %2
-TAKE_PROFIT_PCT = 0.005  # %0.5
+TAKE_PROFIT_PCT = 0.002  # %0.2
 DEEPSEARCH_INTERVAL = 4 * 3600  # 4 saat
 DEEPSEARCH_PER_DAY = 6
 
@@ -353,6 +354,7 @@ async def open_position(signal, usdt_balance):
         if not eth_price:
             logger.error("Fiyat alınamadı, pozisyon açılamıyor.")
             return {"success": False, "error": "Fiyat alınamadı"}
+        logger.info(f"Alınan Fiyat: {eth_price:.2f} USDT, Symbol: {SYMBOL}")
         
         # 10x kaldıraç denemesi
         usdt_amount = usdt_balance  # Maksimum bakiyeyi kullan
@@ -361,10 +363,10 @@ async def open_position(signal, usdt_balance):
         size = max(min_order_size, int(total_value / (eth_price * multiplier)))
         position_value = size * eth_price * multiplier
         required_margin = position_value / leverage
-        logger.info(f"10x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT, Fiyat: {eth_price} USDT)")
+        logger.info(f"10x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT, Fiyat: {eth_price:.2f} USDT)")
         
         if required_margin > usdt_balance:
-            logger.warning(f"10x kaldıraç için yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            logger.warning(f"10x kaldıraç için yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             # 5x kaldıraçla daha küçük pozisyon
             leverage = 5
             total_value = usdt_amount * leverage
@@ -374,12 +376,13 @@ async def open_position(signal, usdt_balance):
             logger.info(f"5x Kaldıraç: {size} kontrat (Toplam Değer: {position_value:.2f} USDT, Gerekli Margin: {required_margin:.2f} USDT)")
         
         if required_margin > usdt_balance:
-            logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance} USDT")
+            logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
         # Stop-loss ve take-profit
-        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
+        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price personnal (1 + STOP_LOSS_PCT)
         take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
+        logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f}")
         
         # Sipariş verisi
         order_data = {
@@ -387,11 +390,12 @@ async def open_position(signal, usdt_balance):
             "side": signal,
             "symbol": SYMBOL,
             "leverage": leverage,
-            "type": "market",
+            "type": "limit",
+            "price": str(round(eth_price, 2)),
             "size": size,
             "marginMode": "ISOLATED",
-            "stopLossPrice": str(round(stop_loss_price, 2)),
-            "takeProfitPrice": str(round(take_profit_price, 2))
+            "triggerStopDownPrice": round(stop_loss_price, 2),  # Stop-loss
+            "triggerStopUpPrice": round(take_profit_price, 2)   # Take-profit
         }
         
         # KuCoin API isteği
