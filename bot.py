@@ -98,8 +98,8 @@ def calculate_indicators():
                 continue
             df["RSI"] = ta.rsi(df["close"], length=14)
             macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
-            df["MACD"] = macd["MACD_12_26_9"]
-            df["MACD_SIGNAL"] = macd["MACDS_12_26_9"]
+            df["MACD"] = macd["MACD_12_26_9"]  # MACD çizgisi
+            df["MACD_SIGNAL"] = macd["MACD_signal_12_26_9"]  # Sinyal çizgisi
             df["MA200"] = ta.sma(df["close"], length=200)
             df["EMA50"] = ta.ema(df["close"], length=50)
             indicators[tf_name] = {
