@@ -423,11 +423,12 @@ async def open_position(signal, usdt_balance):
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
             "symbol": SYMBOL,
-            "leverage": 10,  # String, dökümana göre zorunlu
+            "leverage": leverage,  # String
             "type": "market",
             "size": size,
             "triggerStopDownPrice": round(stop_loss_price, 2),
             "triggerStopUpPrice": round(take_profit_price, 2),
+            "stopPriceType": "MP",  # Mark Price
             "marginMode": "ISOLATED"
         }
         
