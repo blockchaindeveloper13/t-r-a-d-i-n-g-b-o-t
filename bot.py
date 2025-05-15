@@ -1,29 +1,36 @@
 import time
 import logging
-import requests
 import base64
 import hashlib
 import hmac
 import json
 import uuid
 import os
-import talib
+import pandas as pd
+import pandas_ta as ta
 import numpy as np
 from datetime import datetime, timedelta
 import telegram
 from telegram.error import TelegramError
+from dotenv import load_dotenv
+from kucoin.client import Market, Trade
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Heroku config vars
-GROK_API_KEY = os.environ.get('GROK_API_KEY')
-KUCOIN_API_KEY = os.environ.get('KUCOIN_API_KEY')
-KUCOIN_API_SECRET = os.environ.get('KUCOIN_API_SECRET')
-KUCOIN_API_PASSPHRASE = os.environ.get('KUCOIN_API_PASSPHRASE')
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+# Config vars
+load_dotenv()
+GROK_API_KEY = os.getenv('GROK_API_KEY')
+KUCOIN_API_KEY = os.getenv('KUCOIN_API_KEY')
+KUCOIN_API_SECRET = os.getenv('KUCOIN_API_SECRET')
+KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+# KuCoin client
+kucoin_market = Market(url='https://api-futures.kucoin.com')
+kucoin_trade = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_sandbox=False, url='https://api-futures.kucoin.com')
 
 # Telegram bot
 telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
@@ -36,7 +43,7 @@ TAKE_PROFIT_PCT = 0.005  # %0.5
 DEEPSEARCH_INTERVAL = 4 * 3600  # 4 saat
 DEEPSEARCH_PER_DAY = 6
 
-# DeepSearch sonuçlarını saklamak için
+# DeepSearch sonuçlarını saklamak
 last_deepsearch_result = None
 last_deepsearch_time = 0
 
@@ -62,39 +69,40 @@ class KcSigner:
             "Content-Type": "application/json"
         }
 
-# KuCoin’dan K-line verileri alma
+# K-line verileri
 def get_klines(timeframe="1hour", limit=200):
     try:
-        url = f"https://api-futures.kucoin.com/api/v1/market/candles?symbol={SYMBOL}&type={timeframe}&limit={limit}"
-        response = requests.get(url)
-        data = response.json()
-        if data.get('code') == '200000':
-            klines = data.get('data', [])
-            closes = np.array([float(k[2]) for k in klines[::-1]], dtype=np.float64)
-            return closes
-        logger.error(f"K-line alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
-        return None
+        data = kucoin_market.get_kline_data(SYMBOL, timeframe, limit=limit)
+        df = pd.DataFrame(data, columns=["time", "open", "close", "high", "low", "volume", "turnover"])
+        df["close"] = df["close"].astype(float)
+        return df
     except Exception as e:
         logger.error(f"K-line hatası: {str(e)}")
         return None
 
-# Teknik indikatörler hesaplama
+# Teknik indikatörler
 def calculate_indicators():
     try:
         indicators = {}
-        timeframes = {"1hour": 1, "6hour": 6, "5day": 120, "30day": 720}  # Saat cinsinden
-        for tf, hours in timeframes.items():
-            closes = get_klines(tf.lower(), 200)
-            if closes is None or len(closes) < 200:
-                logger.warning(f"{tf} için yeterli veri yok")
+        timeframes = {"1hour": "1h", "6hour": "6h", "5day": "5d", "30day": "30d"}
+        for tf, tf_name in timeframes.items():
+            df = get_klines(tf.lower(), 200)
+            if df is None or len(df) < 200:
+                logger.warning(f"{tf_name} için yeterli veri yok")
                 continue
-            indicators[tf] = {
-                "RSI": talib.RSI(closes, timeperiod=14)[-1],
-                "MACD": talib.MACD(closes, fastperiod=12, slowperiod=26, signalperiod=9)[0][-1],
-                "MACD_SIGNAL": talib.MACD(closes, fastperiod=12, slowperiod=26, signalperiod=9)[1][-1],
-                "MA200": talib.MA(closes, timeperiod=200)[-1],
-                "EMA50": talib.EMA(closes, timeperiod=50)[-1],
-                "PRICE": closes[-1]
+            df["RSI"] = ta.rsi(df["close"], length=14)
+            macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+            df["MACD"] = macd["MACD_12_26_9"]
+            df["MACD_SIGNAL"] = macd["MACDS_12_26_9"]
+            df["MA200"] = ta.sma(df["close"], length=200)
+            df["EMA50"] = ta.ema(df["close"], length=50)
+            indicators[tf_name] = {
+                "RSI": df["RSI"].iloc[-1],
+                "MACD": df["MACD"].iloc[-1],
+                "MACD_SIGNAL": df["MACD_SIGNAL"].iloc[-1],
+                "MA200": df["MA200"].iloc[-1],
+                "EMA50": df["EMA50"].iloc[-1],
+                "PRICE": df["close"].iloc[-1]
             }
         logger.info(f"İndikatörler: {indicators}")
         return indicators
@@ -102,7 +110,7 @@ def calculate_indicators():
         logger.error(f"İndikatör hesaplama hatası: {str(e)}")
         return None
 
-# DeepSearch simülasyonu (Grok API’si yerine geçici)
+# DeepSearch simülasyon
 def run_deepsearch():
     global last_deepsearch_result, last_deepsearch_time
     try:
@@ -110,9 +118,7 @@ def run_deepsearch():
             logger.info("DeepSearch: Son sonucu kullanıyor")
             return last_deepsearch_result
         
-        # Simüle edilmiş DeepSearch (haber odaklı)
-        # Gerçek Grok API’si için endpoint eklenecek
-        news_sentiment = "Neutral"  # Örnek: "Bullish", "Bearish", "Neutral"
+        news_sentiment = "Neutral"  # Grok API’si eklenecek
         logger.info("DeepSearch: Haber taraması yapıldı")
         last_deepsearch_result = {"sentiment": news_sentiment, "timestamp": time.time()}
         last_deepsearch_time = time.time()
@@ -121,7 +127,7 @@ def run_deepsearch():
         logger.error(f"DeepSearch hatası: {str(e)}")
         return None
 
-# Grok’tan sinyal alma (simülasyon, Grok API’si eklenecek)
+# Grok sinyal
 def get_grok_signal(indicators, deepsearch_result):
     try:
         if not indicators or not deepsearch_result:
@@ -129,21 +135,17 @@ def get_grok_signal(indicators, deepsearch_result):
         
         score = 0
         for tf, ind in indicators.items():
-            # RSI: <30 long, >70 short
             if ind["RSI"] < 30:
                 score += 0.2
             elif ind["RSI"] > 70:
                 score -= 0.2
-            # MACD: MACD > signal long, < signal short
             if ind["MACD"] > ind["MACD_SIGNAL"]:
                 score += 0.2
             elif ind["MACD"] < ind["MACD_SIGNAL"]:
                 score -= 0.2
-            # EMA50 > MA200 bullish
             if ind["EMA50"] > ind["MA200"]:
                 score += 0.1
         
-        # DeepSearch sentiment
         if deepsearch_result["sentiment"] == "Bullish":
             score += 0.3
         elif deepsearch_result["sentiment"] == "Bearish":
@@ -162,18 +164,10 @@ def get_grok_signal(indicators, deepsearch_result):
 # Bakiye kontrol
 def check_usdm_balance():
     try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/account-overview?currency=USDT"
-        payload = "GET" + "/api/v1/account-overview?currency=USDT"
-        headers = signer.headers(payload)
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        if data.get('code') == '200000':
-            usdt_balance = data.get('data', {}).get('availableBalance', 0)
-            position_margin = data.get('data', {}).get('positionMargin', 0)
-            return usdt_balance, position_margin
-        logger.error(f"USD-M bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-        return 0, 0
+        response = kucoin_trade.get_account_overview('USDT')
+        usdt_balance = float(response.get('availableBalance', 0))
+        position_margin = float(response.get('positionMargin', 0))
+        return usdt_balance, position_margin
     except Exception as e:
         logger.error(f"Bakiye hatası: {str(e)}")
         return 0, 0
@@ -181,47 +175,32 @@ def check_usdm_balance():
 # Kontrat detayları
 def get_contract_details():
     try:
-        url = "https://api-futures.kucoin.com/api/v1/contracts/active"
-        response = requests.get(url)
-        data = response.json()
-        if data.get('code') == '200000':
-            for contract in data.get('data', []):
-                if contract.get('symbol') == SYMBOL:
-                    return {
-                        "multiplier": float(contract.get('multiplier', 0.001)),
-                        "min_order_size": int(contract.get('minOrderQty', 1)),
-                        "max_leverage": int(contract.get('maxLeverage', 20))
-                    }
-            logger.warning(f"{SYMBOL} kontratı bulunamadı")
-            return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
-        logger.error(f"Kontrat detayları alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        contracts = kucoin_market.get_contracts_list()
+        for contract in contracts:
+            if contract['symbol'] == SYMBOL:
+                return {
+                    "multiplier": float(contract.get('multiplier', 0.001)),
+                    "min_order_size": int(contract.get('minOrderQty', 1)),
+                    "max_leverage": int(contract.get('maxLeverage', 20))
+                }
+        logger.warning(f"{SYMBOL} kontratı bulunamadı")
         return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
     except Exception as e:
         logger.error(f"Kontrat detayları hatası: {str(e)}")
         return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
 
-# Mevcut pozisyonları kontrol
+# Pozisyon kontrol
 def check_positions():
     try:
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/positions?symbol={SYMBOL}"
-        payload = f"GET/api/v1/positions?symbol={SYMBOL}"
-        headers = signer.headers(payload)
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        if data.get('code') == '200000':
-            positions = data.get('data', [])
-            if positions:
-                pos = positions[0]
-                return {
-                    "exists": True,
-                    "side": "long" if pos.get('currentQty', 0) > 0 else "short",
-                    "entry_price": pos.get('avgEntryPrice', 0),
-                    "margin": pos.get('posMargin', 0),
-                    "pnl": pos.get('unrealisedPnl', 0)
-                }
-            return {"exists": False}
-        logger.error(f"Pozisyon kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+        positions = kucoin_trade.get_position_details(SYMBOL)
+        if positions and positions.get('currentQty', 0) != 0:
+            return {
+                "exists": True,
+                "side": "long" if positions['currentQty'] > 0 else "short",
+                "entry_price": float(positions.get('avgEntryPrice', 0)),
+                "margin": float(positions.get('posMargin', 0)),
+                "pnl": float(positions.get('unrealisedPnl', 0))
+            }
         return {"exists": False}
     except Exception as e:
         logger.error(f"Pozisyon kontrol hatası: {str(e)}")
@@ -230,14 +209,8 @@ def check_positions():
 # ETH fiyatı
 def get_eth_price():
     try:
-        url = f"https://api-futures.kucoin.com/api/v1/ticker?symbol={SYMBOL}"
-        response = requests.get(url)
-        data = response.json()
-        if data.get('code') == '200000':
-            price = float(data.get('data', {}).get('price', 0))
-            return price
-        logger.error(f"Fiyat alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
-        return None
+        ticker = kucoin_market.get_ticker(SYMBOL)
+        return float(ticker['price'])
     except Exception as e:
         logger.error(f"Fiyat alma hatası: {str(e)}")
         return None
@@ -264,7 +237,6 @@ async def open_position(side, usdt_balance):
             logger.error("ETH fiyatı alınamadı")
             return {"error": "Fiyat alınamadı"}
         
-        # Tüm bakiyeyi kullan
         total_value = usdt_balance * leverage
         size = max(min_order_size, int(total_value / (eth_price * multiplier)))
         position_value = size * eth_price * multiplier
@@ -274,7 +246,6 @@ async def open_position(side, usdt_balance):
             logger.error(f"Yetersiz bakiye: Gerekli {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"error": "Yetersiz bakiye"}
         
-        # Stop loss ve take profit
         if side == "buy":
             stop_loss_price = eth_price * (1 - STOP_LOSS_PCT)
             take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT)
@@ -286,40 +257,30 @@ async def open_position(side, usdt_balance):
             "clientOid": str(uuid.uuid4()),
             "side": side,
             "symbol": SYMBOL,
-            "leverage": leverage,
+            "leverage": str(leverage),
             "type": "market",
             "size": size,
-            "marginMode": "ISOLATED",
+            "marginMode": "isolated",
             "stopLossPrice": round(stop_loss_price, 2),
             "takeProfitPrice": round(take_profit_price, 2)
         }
         
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/orders"
-        payload = "POST" + "/api/v1/orders" + json.dumps(order_data)
-        headers = signer.headers(payload)
-        response = requests.post(url, headers=headers, json=order_data)
-        data = response.json()
-        logger.info(f"Pozisyon açma yanıtı: {data}")
-        
-        if data.get('code') == '200000':
-            order_id = data.get('data', {}).get('orderId')
-            message = (
-                f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-                f"Yön: {'Long' if side == 'buy' else 'Short'}\n"
-                f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-                f"Kontrat: {size}\n"
-                f"Kaldıraç: {leverage}x\n"
-                f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-                f"Stop Loss: {stop_loss_price:.2f} USDT\n"
-                f"Take Profit: {take_profit_price:.2f} USDT\n"
-                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-            await send_telegram_message(message)
-            logger.info(f"Pozisyon açıldı! Sipariş ID: {order_id}")
-            return {"success": True, "order_id": order_id}
-        logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
-        return {"error": data.get('msg', 'Bilinmeyen hata')}
+        response = kucoin_trade.create_market_order(**order_data)
+        order_id = response.get('orderId')
+        message = (
+            f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
+            f"Yön: {'Long' if side == 'buy' else 'Short'}\n"
+            f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
+            f"Kontrat: {size}\n"
+            f"Kaldıraç: {leverage}x\n"
+            f"Pozisyon Değeri: {position_value:.2f} USDT\n"
+            f"Stop Loss: {stop_loss_price:.2f} USDT\n"
+            f"Take Profit: {take_profit_price:.2f} USDT\n"
+            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        await send_telegram_message(message)
+        logger.info(f"Pozisyon açıldı! Sipariş ID: {order_id}")
+        return {"success": True, "order_id": order_id}
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"error": str(e)}
@@ -328,30 +289,17 @@ async def open_position(side, usdt_balance):
 async def main():
     while True:
         try:
-            # Pozisyon kontrol
             position = check_positions()
             if position["exists"]:
-                # Pozisyon açık, kapanış bildirimi için kontrol
-                if position["pnl"] != 0:  # Basit kapanış tespiti
-                    message = (
-                        f"📉 Pozisyon Kapandı ({SYMBOL})\n"
-                        f"Yön: {position['side'].capitalize()}\n"
-                        f"Çıkış Fiyatı: {get_eth_price():.2f} USDT\n"
-                        f"PNL: {position['pnl']:.2f} USDT\n"
-                        f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    )
-                    await send_telegram_message(message)
                 time.sleep(60)
                 continue
             
-            # Bakiye al
             usdt_balance, _ = check_usdm_balance()
-            if usdt_balance < 5:  # Minimum 5 USDT
+            if usdt_balance < 5:
                 logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
                 time.sleep(60)
                 continue
             
-            # İndikatörler ve DeepSearch
             indicators = calculate_indicators()
             deepsearch_result = run_deepsearch()
             signal = get_grok_signal(indicators, deepsearch_result)
@@ -361,7 +309,6 @@ async def main():
                 time.sleep(60)
                 continue
             
-            # Pozisyon aç
             result = await open_position(signal, usdt_balance)
             if result.get("success"):
                 logger.info("Pozisyon açıldı, bekleniyor")
