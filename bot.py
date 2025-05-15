@@ -66,14 +66,18 @@ class KcSigner:
         }
 
 # K-line verileri
-def get_klines(timeframe="1hour", limit=200):
+def get_klines(granularity=60, limit=200):
     try:
-        url = f"https://api-futures.kucoin.com/api/v1/market/candles?symbol={SYMBOL}&type={timeframe}&limit={limit}"
+        url = f"https://api-futures.kucoin.com/api/v1/kline/query?symbol={SYMBOL}&granularity={granularity}&limit={limit}"
         response = requests.get(url)
         data = response.json()
+        logger.info(f"K-line yanıtı: {data}")
         if data.get('code') == '200000':
             klines = data.get('data', [])
-            df = pd.DataFrame(klines, columns=["time", "open", "close", "high", "low", "volume", "turnover"])
+            if not klines:
+                logger.warning(f"{granularity} için veri yok")
+                return None
+            df = pd.DataFrame(klines, columns=["time", "open", "high", "low", "close", "volume"])
             df["close"] = df["close"].astype(float)
             return df
         logger.error(f"K-line alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
@@ -86,9 +90,9 @@ def get_klines(timeframe="1hour", limit=200):
 def calculate_indicators():
     try:
         indicators = {}
-        timeframes = {"1hour": "1h", "6hour": "6h", "5day": "5d", "30day": "30d"}
-        for tf, tf_name in timeframes.items():
-            df = get_klines(tf.lower(), 200)
+        timeframes = {60: "1h", 240: "4h", 1440: "1d", 10080: "1w"}
+        for granularity, tf_name in timeframes.items():
+            df = get_klines(granularity, 200)
             if df is None or len(df) < 200:
                 logger.warning(f"{tf_name} için yeterli veri yok")
                 continue
@@ -172,6 +176,7 @@ def check_usdm_balance():
         headers = signer.headers(payload)
         response = requests.get(url, headers=headers)
         data = response.json()
+        logger.info(f"Bakiye yanıtı: {data}")
         if data.get('code') == '200000':
             usdt_balance = float(data.get('data', {}).get('availableBalance', 0))
             position_margin = float(data.get('data', {}).get('positionMargin', 0))
@@ -188,6 +193,7 @@ def get_contract_details():
         url = "https://api-futures.kucoin.com/api/v1/contracts/active"
         response = requests.get(url)
         data = response.json()
+        logger.info(f"Kontrat yanıtı: {data}")
         if data.get('code') == '200000':
             for contract in data.get('data', []):
                 if contract.get('symbol') == SYMBOL:
@@ -213,6 +219,7 @@ def check_positions():
         headers = signer.headers(payload)
         response = requests.get(url, headers=headers)
         data = response.json()
+        logger.info(f"Pozisyon yanıtı: {data}")
         if data.get('code') == '200000':
             positions = data.get('data', [])
             if positions:
@@ -237,6 +244,7 @@ def get_eth_price():
         url = f"https://api-futures.kucoin.com/api/v1/ticker?symbol={SYMBOL}"
         response = requests.get(url)
         data = response.json()
+        logger.info(f"Fiyat yanıtı: {data}")
         if data.get('code') == '200000':
             price = float(data.get('data', {}).get('price', 0))
             return price
@@ -332,10 +340,12 @@ async def main():
         try:
             position = check_positions()
             if position["exists"]:
+                logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
                 time.sleep(60)
                 continue
             
-            usdt_balance, _ = check_usdm_balance()
+            usdt_balance, position_margin = check_usdm_balance()
+            logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
             if usdt_balance < 5:
                 logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
                 time.sleep(60)
