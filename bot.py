@@ -1,11 +1,10 @@
+import time
+import logging
+import requests
 import base64
 import hashlib
 import hmac
-import time
-import http.client
 import json
-import logging
-import requests
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,58 +37,37 @@ class KcSigner:
             "Content-Type": "application/json"
         }
 
-# Test fonksiyonu (GET ve POST için)
-def test_endpoint(domain, endpoint, params, method="GET", data=None):
+# Bakiye kontrol fonksiyonu
+def check_balance():
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://{domain}{endpoint}"
-        payload = method + endpoint + (params if method == "GET" else (json.dumps(data) if data else ""))
+        url = "https://api-futures.kucoin.com/api/v1/account-overview-all"
+        payload = "GET" + "/api/v1/account-overview-all"
         headers = signer.headers(payload)
-        logger.info(f"Domain: {domain}, Endpoint: {endpoint}, Method: {method}, Headers: {headers}")
-        
-        if method == "GET":
-            response = requests.request('get', url, headers=headers)
-        else:  # POST
-            response = requests.request('post', url, headers=headers, data=json.dumps(data) if data else None)
-        
-        logger.info(f"Status Code: {response.status_code}")
+        logger.info(f"Headers: {headers}")
+        response = requests.request('get', url, headers=headers)
         data = response.json()
         logger.info(f"API yanıtı: {data}")
         if data.get('code') == '200000':
-            logger.info(f"Bağlantı başarılı! Yanıt: {data.get('data')}")
+            logger.info(f"Bakiye kontrolü başarılı! Yanıt: {data.get('data')}")
+            # USDT bakiyesini öne çıkar
+            for account in data.get('data', []):
+                if account.get('currency') == 'USDT':
+                    logger.info(f"USDT Bakiyesi: {account.get('accountEquity')} (Kullanılabilir: {account.get('availableBalance')})")
         else:
-            logger.error(f"Bağlantı başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            logger.error(f"Bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
         return data
     except Exception as e:
-        logger.error(f"Test hatası: {str(e)}")
+        logger.error(f"Hata: {str(e)}")
         return {"error": str(e)}
 
-# Test endpoint’leri
-endpoints = [
-    {
-        "domain": "api-futures.kucoin.com",
-        "endpoint": "/api/v1/position?symbol=ETHUSDTM",
-        "params": "symbol=ETHUSDTM",
-        "method": "GET",
-        "data": None
-    },
-    {
-        "domain": "api-futures.kucoin.com",
-        "endpoint": "/api/v1/deposit-address",
-        "params": "",
-        "method": "POST",
-        "data": {"currency": "USDT"}
-    },
-    {
-        "domain": "api-futures.kucoin.com",
-        "endpoint": "/api/v1/contracts/active",
-        "params": "",
-        "method": "GET",
-        "data": None
-    }
-]
-
+# Ana döngü
 if __name__ == "__main__":
-    for test in endpoints:
-        logger.info(f"Testing: {test['domain']} {test['endpoint']} ({test['method']})")
-        test_endpoint(test['domain'], test['endpoint'], test['params'], test['method'], test['data'])
+    while True:
+        try:
+            result = check_balance()
+            logger.info(f"Sonuç: {result}")
+            time.sleep(60)  # Her 60 saniyede bir kontrol
+        except Exception as e:
+            logger.error(f"Döngü hatası: {str(e)}")
+            time.sleep(60)  # Hata durumunda 60 saniye bekle
