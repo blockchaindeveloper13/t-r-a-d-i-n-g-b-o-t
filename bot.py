@@ -348,30 +348,6 @@ async def open_position(signal, usdt_balance):
             min_order_size = int(contract.get('minOrderQty', 1))
             max_leverage = int(contract.get('maxLeverage', 20))
         
-        # Margin modunu kontrol et ve isolated yap
-        url = "https://api-futures.kucoin.com/api/v1/margin/mode"
-        timestamp = str(int(time.time() * 1000))
-        params = {"symbol": SYMBOL}
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        headers = signer.headers(f"GET/api/v1/margin/mode?symbol={SYMBOL}")
-        response = requests.get(url, params=params, headers=headers)
-        margin_mode_response = response.json()
-        
-        if margin_mode_response['code'] != '200000':
-            logger.error(f"Margin modu kontrol hatası: {margin_mode_response['msg']}")
-            return {"success": False, "error": margin_mode_response['msg']}
-        
-        current_mode = margin_mode_response['data']['marginMode']
-        if current_mode != 'ISOLATED':
-            payload = {"symbol": SYMBOL, "marginMode": "ISOLATED"}
-            headers = signer.headers(f"POST/api/v1/margin/mode{json.dumps(payload)}")
-            response = requests.post(url, json=payload, headers=headers)
-            set_margin_response = response.json()
-            if set_margin_response['code'] != '200000':
-                logger.error(f"Margin modu değiştirme hatası: {set_margin_response['msg']}")
-                return {"success": False, "error": set_margin_response['msg']}
-            logger.info(f"Margin modu ISOLATED olarak ayarlandı: {SYMBOL}")
-
         # Fiyat al
         eth_price = get_eth_price()
         if not eth_price:
@@ -421,6 +397,7 @@ async def open_position(signal, usdt_balance):
         # KuCoin API isteği
         url = "https://api-futures.kucoin.com/api/v1/orders"
         payload = f"POST/api/v1/orders{json.dumps(order_data)}"
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
         headers = signer.headers(payload)
         logger.info(f"Headers: {headers}")
         logger.info(f"Sipariş verisi: {order_data}")
