@@ -6,4 +6,4 @@ pandas_ta>=0.3.14b0
 numpy>=1.26.0,<2.0.0
 requests>=2.31.0
 setuptools>=65.5.0
-ta-lib==0.4.28
+
