@@ -111,6 +111,7 @@ def calculate_indicators():
         logger.error(f"İndikatör hesaplama hatası: {str(e)}")
         return None
 
+# Grok sinyal
 def get_grok_signal(indicators, deepsearch_result):
     try:
         if not indicators or not deepsearch_result:
@@ -156,40 +157,6 @@ def run_deepsearch():
     except Exception as e:
         logger.error(f"DeepSearch hatası: {str(e)}")
         return None
-
-# Grok sinyal
-def get_grok_signal(indicators, deepsearch_result):
-    try:
-        if not indicators or not deepsearch_result:
-            return "bekle"
-        
-        score = 0
-        for tf, ind in indicators.items():
-            if ind["RSI"] < 30:
-                score += 0.2
-            elif ind["RSI"] > 70:
-                score -= 0.2
-            if ind["MACD"] > ind["MACD_SIGNAL"]:
-                score += 0.2
-            elif ind["MACD"] < ind["MACD_SIGNAL"]:
-                score -= 0.2
-            if ind["EMA50"] > ind["MA200"]:
-                score += 0.1
-        
-        if deepsearch_result["sentiment"] == "Bullish":
-            score += 0.3
-        elif deepsearch_result["sentiment"] == "Bearish":
-            score -= 0.3
-        
-        logger.info(f"Grok sinyal puanı: {score}")
-        if score > 0.5:
-            return "buy"
-        elif score < -0.5:
-            return "sell"
-        return "bekle"
-    except Exception as e:
-        logger.error(f"Grok sinyal hatası: {str(e)}")
-        return "bekle"
 
 # Bakiye kontrol
 def check_usdm_balance():
