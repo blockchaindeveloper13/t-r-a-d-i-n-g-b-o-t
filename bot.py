@@ -48,15 +48,31 @@ def check_balance():
         response = requests.request('get', url, headers=headers)
         data = response.json()
         logger.info(f"API yanıtı: {data}")
+        
         if data.get('code') == '200000':
-            logger.info(f"Bakiye kontrolü başarılı! Yanıt: {data.get('data')}")
-            # USDT bakiyesini öne çıkar
-            for account in data.get('data', []):
-                if account.get('currency') == 'USDT':
-                    logger.info(f"USDT Bakiyesi: {account.get('accountEquity')} (Kullanılabilir: {account.get('availableBalance')})")
+            accounts = data.get('data', {}).get('accounts', [])
+            summary = data.get('data', {}).get('summary', {})
+            logger.info(f"Bakiye kontrolü başarılı! Özet: {summary}")
+            
+            # Tüm hesapları logla
+            for account in accounts:
+                currency = account.get('currency', 'Bilinmeyen')
+                equity = account.get('accountEquity', 0)
+                available = account.get('availableBalance', 0)
+                logger.info(f"Hesap: {account.get('accountName')} | Para Birimi: {currency} | Toplam Bakiye: {equity} | Kullanılabilir: {available}")
+                
+                # USDT’yi özellikle vurgula
+                if currency == 'USDT':
+                    logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {equity} | Kullanılabilir: {available} ***")
+            
+            # Eğer USDT bulunmadıysa
+            if not any(account.get('currency') == 'USDT' for account in accounts):
+                logger.warning("USDT bakiyesi bulunamadı. Hesapta USDT olmayabilir.")
+            
+            return data
         else:
             logger.error(f"Bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-        return data
+            return data
     except Exception as e:
         logger.error(f"Hata: {str(e)}")
         return {"error": str(e)}
