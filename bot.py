@@ -97,15 +97,10 @@ def calculate_indicators():
                 logger.warning(f"{tf_name} için yeterli veri yok")
                 continue
             df["RSI"] = ta.rsi(df["close"], length=14)
-            macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
-            df["MACD"] = macd["MACD_12_26_9"]  # MACD çizgisi
-            df["MACD_SIGNAL"] = macd["MACD_signal_12_26_9"]  # Sinyal çizgisi
             df["MA200"] = ta.sma(df["close"], length=200)
             df["EMA50"] = ta.ema(df["close"], length=50)
             indicators[tf_name] = {
                 "RSI": df["RSI"].iloc[-1],
-                "MACD": df["MACD"].iloc[-1],
-                "MACD_SIGNAL": df["MACD_SIGNAL"].iloc[-1],
                 "MA200": df["MA200"].iloc[-1],
                 "EMA50": df["EMA50"].iloc[-1],
                 "PRICE": df["close"].iloc[-1]
@@ -115,6 +110,35 @@ def calculate_indicators():
     except Exception as e:
         logger.error(f"İndikatör hesaplama hatası: {str(e)}")
         return None
+
+def get_grok_signal(indicators, deepsearch_result):
+    try:
+        if not indicators or not deepsearch_result:
+            return "bekle"
+        
+        score = 0
+        for tf, ind in indicators.items():
+            if ind["RSI"] < 30:
+                score += 0.2
+            elif ind["RSI"] > 70:
+                score -= 0.2
+            if ind["EMA50"] > ind["MA200"]:
+                score += 0.1
+        
+        if deepsearch_result["sentiment"] == "Bullish":
+            score += 0.3
+        elif deepsearch_result["sentiment"] == "Bearish":
+            score -= 0.3
+        
+        logger.info(f"Grok sinyal puanı: {score}")
+        if score > 0.5:
+            return "buy"
+        elif score < -0.5:
+            return "sell"
+        return "bekle"
+    except Exception as e:
+        logger.error(f"Grok sinyal hatası: {str(e)}")
+        return "bekle"
 
 # DeepSearch simülasyon
 def run_deepsearch():
