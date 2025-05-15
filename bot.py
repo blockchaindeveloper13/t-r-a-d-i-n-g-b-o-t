@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import telegram
 from telegram.error import TelegramError
 from dotenv import load_dotenv
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import feedparser
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -149,14 +151,78 @@ def run_deepsearch():
             logger.info("DeepSearch: Son sonucu kullanıyor")
             return last_deepsearch_result
         
-        news_sentiment = "Neutral"  # Grok API’si eklenecek
-        logger.info("DeepSearch: Haber taraması yapıldı")
-        last_deepsearch_result = {"sentiment": news_sentiment, "timestamp": time.time()}
+        # RSS feed’leri
+        feeds = [
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss"
+        ]
+        
+        # Kripto odaklı haberleri topla
+        crypto_news = []
+        for feed_url in feeds:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:10]:  # Her feed’den max 10 haber
+                title = entry.get("title", "").lower()
+                summary = entry.get("summary", "").lower()
+                text = title + " " + summary
+                # Kripto piyasası haberleri
+                if any(keyword in text for keyword in ["bitcoin", "ethereum", "crypto", "blockchain"]):
+                    if not any(keyword in text for keyword in ["celebrity", "gossip", "entertainment"]):
+                        crypto_news.append({
+                            "title": entry.get("title", ""),
+                            "summary": entry.get("summary", ""),
+                            "link": entry.get("link", ""),
+                            "text": text
+                        })
+        
+        if not crypto_news:
+            logger.info("DeepSearch: Kripto haberi bulunamadı, Neutral dönüyor")
+            last_deepsearch_result = {"sentiment": "Neutral", "timestamp": time.time()}
+            last_deepsearch_time = time.time()
+            return last_deepsearch_result
+        
+        # VaderSentiment ile bağlam odaklı analiz
+        analyzer = SentimentIntensityAnalyzer()
+        sentiment_scores = []
+        reg_spec_contexts = []
+        for news in crypto_news:
+            text = f"{news['title']}: {news['summary']}"
+            score = analyzer.polarity_scores(text)["compound"]
+            
+            # Regülasyon ve spekülasyon bağlamı
+            reg_keywords = ["regulation", "sec", "law", "policy", "compliance"]
+            spec_keywords = ["speculation", "rally", "crash", "bubble", "surge", "dip"]
+            is_regulation = any(keyword in news["text"] for keyword in reg_keywords)
+            is_speculation = any(keyword in news["text"] for keyword in spec_keywords)
+            
+            # Bağlama göre hafif ağırlık
+            if is_regulation:
+                score *= 1.1  # Hafif boost, bağlam ön planda
+                reg_spec_contexts.append(f"Regulation: {news['title']}")
+            if is_speculation:
+                score *= 1.05  # Daha hafif boost
+                reg_spec_contexts.append(f"Speculation: {news['title']}")
+            
+            sentiment_scores.append(score)
+        
+        # Ortalama skor ve sentiment
+        avg_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+        sentiment = "Bullish" if avg_score > 0.1 else "Bearish" if avg_score < -0.1 else "Neutral"
+        
+        # Loglama
+        logger.info(f"DeepSearch: {len(crypto_news)} kripto haberi tarandı, sentiment: {sentiment}, ortalama skor: {avg_score:.3f}")
+        logger.info(f"DeepSearch: Tarama başlıkları: {[news['title'] for news in crypto_news]}")
+        if reg_spec_contexts:
+            logger.info(f"DeepSearch: Regülasyon/Spekülasyon bağlamları: {reg_spec_contexts}")
+        
+        last_deepsearch_result = {"sentiment": sentiment, "timestamp": time.time()}
         last_deepsearch_time = time.time()
         return last_deepsearch_result
+    
     except Exception as e:
         logger.error(f"DeepSearch hatası: {str(e)}")
-        return None
+        return last_deepsearch_result if last_deepsearch_result else {"sentiment": "Neutral", "timestamp": time.time()}
+
 
 # Bakiye kontrol
 def check_usdm_balance():
