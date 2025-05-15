@@ -141,7 +141,7 @@ def get_grok_signal(indicators, deepsearch_result):
                 score -= 0.2
             if ind["MACD"] > ind["MACD_SIGNAL"]:
                 score += 0.2
-            elif ind["MACD"] < індикатор["MACD_SIGNAL"]:
+            elif ind["MACD"] < ind["MACD_SIGNAL"]:
                 score -= 0.2
             if ind["EMA50"] > ind["MA200"]:
                 score += 0.1
@@ -164,7 +164,7 @@ def get_grok_signal(indicators, deepsearch_result):
 # Bakiye kontrol
 def check_usdm_balance():
     try:
-        response = kucoin_trade.get_account_overview('USDT')
+        response = kucoin_trade.get_account_detail(currency='USDT')
         usdt_balance = float(response.get('availableBalance', 0))
         position_margin = float(response.get('positionMargin', 0))
         return usdt_balance, position_margin
@@ -192,7 +192,7 @@ def get_contract_details():
 # Pozisyon kontrol
 def check_positions():
     try:
-        positions = kucoin_trade.get_position_details(SYMBOL)
+        positions = kucoin_trade.get_position(symbol=SYMBOL)
         if positions and positions.get('currentQty', 0) != 0:
             return {
                 "exists": True,
