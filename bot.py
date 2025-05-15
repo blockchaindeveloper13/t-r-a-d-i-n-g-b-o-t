@@ -380,7 +380,7 @@ async def open_position(signal, usdt_balance):
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
         # Stop-loss ve take-profit
-        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price personnal (1 + STOP_LOSS_PCT)
+        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
         take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
         logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f}")
         
