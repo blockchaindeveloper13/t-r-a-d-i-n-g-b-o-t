@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,46 +38,148 @@ class KcSigner:
             "Content-Type": "application/json"
         }
 
-# Bakiye kontrol fonksiyonu
-def check_balance():
+# Fonlama oranı alma
+def get_funding_rate(symbol="ETHUSDTM"):
+    try:
+        url = f"https://api-futures.kucoin.com/api/v1/funding-rate/{symbol}/current"
+        response = requests.get(url)
+        data = response.json()
+        logger.info(f"Funding Rate yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            funding_data = data.get('data', {})
+            logger.info(f"*** {symbol} Fonlama Oranı ***")
+            logger.info(f"Fonlama Oranı: {funding_data.get('value')*100:.4f}%")
+            logger.info(f"Tahmini Oran: {funding_data.get('predictedValue')*100:.4f}%")
+            return funding_data
+        else:
+            logger.error(f"Fonlama oranı alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
+    except Exception as e:
+        logger.error(f"Fonlama oranı hatası: {str(e)}")
+        return None
+
+# Pozisyon ve bakiye kontrol
+def check_positions(currency="USDT"):
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/account-balance"
-        payload = "GET" + "/api/v1/account-balance"
+        url = f"https://api-futures.kucoin.com/api/v1/positions?currency={currency}"
+        payload = f"GET/api/v1/positions?currency={currency}"
         headers = signer.headers(payload)
         logger.info(f"Headers: {headers}")
-        response = requests.request('get', url, headers=headers)
+        response = requests.get(url, headers=headers)
         data = response.json()
         logger.info(f"API yanıtı: {data}")
         
         if data.get('code') == '200000':
-            summary = data.get('data', {})
-            currency = summary.get('currency', 'Bilinmeyen')
-            total_balance = summary.get('totalBalance', 0)
-            available_balance = summary.get('availableBalance', 0)
-            logger.info(f"Bakiye kontrolü başarılı! Para Birimi: {currency} | Toplam Bakiye: {total_balance} | Kullanılabilir: {available_balance}")
+            positions = data.get('data', [])
+            usdt_balance = None
+            for position in positions:
+                symbol = position.get('symbol', 'Bilinmeyen')
+                settle_currency = position.get('settleCurrency', 'Bilinmeyen')
+                pos_margin = position.get('posMargin', 0)
+                logger.info(f"Sembol: {symbol} | Para Birimi: {settle_currency} | Pozisyon Margin: {pos_margin}")
+                
+                if settle_currency == 'USDT':
+                    logger.info(f"*** USDT Pozisyonu Bulundu! Margin: {pos_margin} ***")
+                    usdt_balance = pos_margin
             
-            # USDT’yi özellikle vurgula
-            if currency == 'USDT':
-                logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {total_balance} | Kullanılabilir: {available_balance} ***")
-            else:
-                logger.warning("USDT bakiyesi bulunamadı. Hesapta USDT olmayabilir.")
+            if not positions:
+                logger.warning("Hiç pozisyon bulunamadı.")
+            if usdt_balance is None:
+                logger.warning("USDT pozisyonu veya margin bulunamadı.")
             
-            return data
+            return usdt_balance
         else:
-            logger.error(f"Bakiye kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-            return data
+            logger.error(f"Pozisyon kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
     except Exception as e:
         logger.error(f"Hata: {str(e)}")
+        return None
+
+# ETH fiyatını alma
+def get_eth_price():
+    try:
+        url = "https://api-futures.kucoin.com/api/v1/ticker?symbol=ETHUSDTM"
+        response = requests.get(url)
+        data = response.json()
+        if data.get('code') == '200000':
+            price = float(data.get('data', {}).get('price', 0))
+            logger.info(f"ETH/USDTM Fiyatı: {price} USDT")
+            return price
+        else:
+            logger.error(f"Fiyat alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+            return None
+    except Exception as e:
+        logger.error(f"Fiyat alma hatası: {str(e)}")
+        return None
+
+# Pozisyon açma
+def open_position():
+    try:
+        # Fonlama oranı
+        funding_rate = get_funding_rate()
+        if not funding_rate:
+            logger.warning("Fonlama oranı alınamadı, devam ediliyor.")
+        
+        # Pozisyon ve bakiye kontrol
+        usdt_balance = check_positions()
+        if usdt_balance is None or usdt_balance < 11:
+            logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
+            return {"error": "Yetersiz bakiye"}
+        
+        # ETH fiyatını al
+        eth_price = get_eth_price()
+        if not eth_price:
+            logger.error("ETH fiyatı alınamadı, pozisyon açılamıyor.")
+            return {"error": "Fiyat alınamadı"}
+        
+        # Pozisyon parametreleri
+        usdt_amount = 11
+        leverage = 3
+        total_value = usdt_amount * leverage
+        multiplier = 0.001
+        size = int(total_value / (eth_price * multiplier))
+        logger.info(f"Pozisyon: {size} kontrat (Toplam Değer: {total_value} USDT, Fiyat: {eth_price} USDT)")
+        
+        # Sipariş verisi
+        order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "buy",
+            "symbol": "ETHUSDTM",
+            "leverage": str(leverage),
+            "type": "market",
+            "size": size,
+            "marginMode": "CROSS"  # Cross margin, dökümana uygun
+        }
+        
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/orders"
+        payload = "POST" + "/api/v1/orders" + json.dumps(order_data)
+        headers = signer.headers(payload)
+        logger.info(f"Headers: {headers}")
+        response = requests.post(url, headers=headers, json=order_data)
+        data = response.json()
+        logger.info(f"Pozisyon açma yanıtı: {data}")
+        
+        if data.get('code') == '200000':
+            logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {data.get('data', {}).get('orderId')}")
+        else:
+            logger.error(f"Pozisyon açılamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        
+        return data
+    except Exception as e:
+        logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"error": str(e)}
 
-# Ana döngü
+# Ana program
 if __name__ == "__main__":
-    while True:
-        try:
-            result = check_balance()
-            logger.info(f"Sonuç: {result}")
-            time.sleep(60)  # Her 60 saniyede bir kontrol
-        except Exception as e:
-            logger.error(f"Döngü hatası: {str(e)}")
-            time.sleep(60)  # Hata durumunda 60 saniye bekle
+    try:
+        result = open_position()
+        logger.info(f"Sonuç: {result}")
+        if result.get('code') == '200000':
+            logger.info("Pozisyon açıldı, bot durduruluyor.")
+        else:
+            logger.error("Pozisyon açılamadı, lütfen logları kontrol edin.")
+    except Exception as e:
+        logger.error(f"Başlatma hatası: {str(e)}")
