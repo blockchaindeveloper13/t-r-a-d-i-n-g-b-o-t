@@ -10,7 +10,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# API bilgileri (Doğrudan koda yazıyoruz)
+# API bilgileri
 KUCOIN_API_KEY = "6825e85e61d4190001723c42"
 KUCOIN_API_SECRET = "d1d22a52-876f-43ea-a38e-7c6918dca081"
 KUCOIN_API_PASSPHRASE = "123456789"
@@ -26,6 +26,11 @@ def generate_signature(endpoint, method, params, api_secret):
     sign = hmac.new(api_secret.encode('utf-8'), str_to_sign.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(sign).decode('utf-8'), timestamp
 
+# Passphrase şifreleme
+def encrypt_passphrase(passphrase, api_secret):
+    sign = hmac.new(api_secret.encode('utf-8'), passphrase.encode('utf-8'), hashlib.sha256).digest()
+    return base64.b64encode(sign).decode('utf-8')
+
 # Test isteği
 def test_api_connection():
     try:
@@ -33,11 +38,14 @@ def test_api_connection():
         endpoint = "/api/v1/account-overview?currency=USDT"
         params = "currency=USDT"
         sign, timestamp = generate_signature("/api/v1/account-overview", "GET", params, KUCOIN_API_SECRET)
+        encrypted_passphrase = encrypt_passphrase(KUCOIN_API_PASSPHRASE, KUCOIN_API_SECRET)
         headers = {
             'KC-API-KEY': KUCOIN_API_KEY,
             'KC-API-SIGN': sign,
             'KC-API-TIMESTAMP': timestamp,
-            'KC-API-PASSPHRASE': KUCOIN_API_PASSPHRASE
+            'KC-API-PASSPHRASE': encrypted_passphrase,
+            'KC-API-KEY-VERSION': '2',
+            'Content-Type': 'application/json'
         }
         logger.info(f"Headers: {headers}")
         conn.request("GET", endpoint, '', headers)
