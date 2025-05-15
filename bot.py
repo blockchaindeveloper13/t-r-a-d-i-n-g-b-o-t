@@ -41,8 +41,8 @@ class KcSigner:
 def check_balance():
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/account-overview-all"
-        payload = "GET" + "/api/v1/account-overview-all"
+        url = "https://api-futures.kucoin.com/api/v1/account-balance"
+        payload = "GET" + "/api/v1/account-balance"
         headers = signer.headers(payload)
         logger.info(f"Headers: {headers}")
         response = requests.request('get', url, headers=headers)
@@ -50,23 +50,16 @@ def check_balance():
         logger.info(f"API yanıtı: {data}")
         
         if data.get('code') == '200000':
-            accounts = data.get('data', {}).get('accounts', [])
-            summary = data.get('data', {}).get('summary', {})
-            logger.info(f"Bakiye kontrolü başarılı! Özet: {summary}")
+            summary = data.get('data', {})
+            currency = summary.get('currency', 'Bilinmeyen')
+            total_balance = summary.get('totalBalance', 0)
+            available_balance = summary.get('availableBalance', 0)
+            logger.info(f"Bakiye kontrolü başarılı! Para Birimi: {currency} | Toplam Bakiye: {total_balance} | Kullanılabilir: {available_balance}")
             
-            # Tüm hesapları logla
-            for account in accounts:
-                currency = account.get('currency', 'Bilinmeyen')
-                equity = account.get('accountEquity', 0)
-                available = account.get('availableBalance', 0)
-                logger.info(f"Hesap: {account.get('accountName')} | Para Birimi: {currency} | Toplam Bakiye: {equity} | Kullanılabilir: {available}")
-                
-                # USDT’yi özellikle vurgula
-                if currency == 'USDT':
-                    logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {equity} | Kullanılabilir: {available} ***")
-            
-            # Eğer USDT bulunmadıysa
-            if not any(account.get('currency') == 'USDT' for account in accounts):
+            # USDT’yi özellikle vurgula
+            if currency == 'USDT':
+                logger.info(f"*** USDT Bakiyesi Bulundu! Toplam: {total_balance} | Kullanılabilir: {available_balance} ***")
+            else:
                 logger.warning("USDT bakiyesi bulunamadı. Hesapta USDT olmayabilir.")
             
             return data
