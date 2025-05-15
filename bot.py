@@ -1,4 +1,3 @@
-import os
 import http.client
 import hmac
 import hashlib
@@ -6,22 +5,15 @@ import base64
 import time
 import json
 import logging
-from dotenv import load_dotenv
 
 # Loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Çevre değişkenleri
-load_dotenv()
-KUCOIN_API_KEY = os.getenv('KUCOIN_API_KEY')
-KUCOIN_API_SECRET = os.getenv('KUCOIN_API_SECRET')
-KUCOIN_API_PASSPHRASE = os.getenv('KUCOIN_API_PASSPHRASE')
-
-# Çevre değişkenlerini kontrol et
-if not all([KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE]):
-    logger.error("Eksik çevre değişkeni! Lütfen .env dosyasını kontrol edin.")
-    exit(1)
+# API bilgileri (Manuel olarak giriyoruz)
+KUCOIN_API_KEY = "68251ed54985e300012f8549"
+KUCOIN_API_SECRET = "349d4bcd-95c7-45c5-805a-c1ce1d020dc6"
+KUCOIN_API_PASSPHRASE = "vedat1453"  # Passphrase'i kontrol et, doğru olduğundan emin ol
 
 # KuCoin API imzalama
 def generate_signature(endpoint, method, params, api_secret):
@@ -34,8 +26,8 @@ def generate_signature(endpoint, method, params, api_secret):
     sign = hmac.new(api_secret.encode('utf-8'), str_to_sign.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(sign).decode('utf-8'), timestamp
 
-# Test isteği
-def test_api_connection():
+# Manuel API testi
+def manual_api_test():
     try:
         conn = http.client.HTTPSConnection("api-futures.kucoin.com")
         endpoint = "/api/v1/account-overview?currency=USDT"
@@ -62,4 +54,4 @@ def test_api_connection():
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    test_api_connection()
+    manual_api_test()
