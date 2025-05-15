@@ -30,7 +30,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 # KuCoin client
 kucoin_market = Market(url='https://api-futures.kucoin.com')
-kucoin_trade = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, is_sandbox=False, url='https://api-futures.kucoin.com')
+kucoin_trade = Trade(key=KUCOIN_API_KEY, secret=KUCOIN_API_SECRET, passphrase=KUCOIN_API_PASSPHRASE, url='https://api-futures.kucoin.com')
 
 # Telegram bot
 telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
@@ -141,7 +141,7 @@ def get_grok_signal(indicators, deepsearch_result):
                 score -= 0.2
             if ind["MACD"] > ind["MACD_SIGNAL"]:
                 score += 0.2
-            elif ind["MACD"] < ind["MACD_SIGNAL"]:
+            elif ind["MACD"] < індикатор["MACD_SIGNAL"]:
                 score -= 0.2
             if ind["EMA50"] > ind["MA200"]:
                 score += 0.1
