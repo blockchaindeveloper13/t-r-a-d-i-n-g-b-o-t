@@ -36,7 +36,7 @@ telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Sabit ayarlar
 SYMBOL = "ETHUSDTM"  # BTCUSDTM olabilir, panelde kontrol et
-STOP_LOSS_PCT = 0.02  # %2
+STOP_LOSS_PCT = 0.01  # %1
 TAKE_PROFIT_PCT = 0.01  # %1
 DEEPSEARCH_INTERVAL = 4 * 3600  # 4 saat
 DEEPSEARCH_PER_DAY = 6
