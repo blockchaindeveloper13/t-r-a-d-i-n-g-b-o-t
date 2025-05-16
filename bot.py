@@ -534,8 +534,8 @@ async def open_position(signal, usdt_balance):
         for order in orders:
             for attempt in range(max_retries):
                 try:
-                    st_url = "https://api-futures.kucoin.com/api/v1/stop-orders"
-                    st_payload = f"POST/api/v1/stop-orders{json.dumps(order)}"
+                    st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
+                    st_payload = f"POST/api/v1/st-orders{json.dumps(order)}"
                     headers = signer.headers(st_payload)
                     logger.info(f"{order['stopPriceType']} isteği gönderiliyor: {order}")
                     st_response = requests.post(st_url, headers=headers, json=order)
