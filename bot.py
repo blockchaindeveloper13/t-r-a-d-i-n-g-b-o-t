@@ -428,7 +428,7 @@ async def open_position(signal, usdt_balance):
             "size": size,
             "triggerStopDownPrice": round(stop_loss_price, 2),
             "triggerStopUpPrice": round(take_profit_price, 2),
-            "stopPriceType": "MP",  # Mark Price
+            "stopPriceType": "", 
             "marginMode": "ISOLATED"
         }
         
