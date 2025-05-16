@@ -14,13 +14,14 @@ logger = logging.getLogger(__name__)
 
 # Sabitler (Bu değerleri kendi ayarlarınla değiştir)
 SYMBOL = "ETHUSDTM"
-KUCOIN_API_KEY = "your_api_key"
-KUCOIN_API_SECRET = "your_api_secret"
-KUCOIN_API_PASSPHRASE = "your_api_passphrase"
-TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-TELEGRAM_CHAT_ID = "-1001234567890"  # Grup ID’sini buraya gir (doğru ID olduğundan emin ol)
+KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY")
+KUCOIN_API_SECRET = os.getenv("KUCOIN_API_SECRET")
+KUCOIN_API_PASSPHRASE = os.getenv("KUCOIN_API_PASSPHRASE")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STOP_LOSS_PCT = 0.008  # %0.8 stop-loss
 TAKE_PROFIT_PCT = 0.012  # %1.2 take-profit
+
 
 # KuCoin API için kimlik doğrulama sınıfı (Varsayıyorum ki bu sınıfın var)
 class KcSigner:
