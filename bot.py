@@ -376,8 +376,8 @@ async def open_position(signal, usdt_balance):
             return {"success": False, "error": "Fiyat alınamadı"}
         logger.info(f"Alınan Fiyat: {eth_price:.2f} USDT, Symbol: {SYMBOL}")
         
-        # 10x kaldıraç denemesi
-        usdt_amount = usdt_balance  # Maksimum bakiyeyi kullan
+        # 10x kaldıraç denemesi (Stop-loss/take-profit için tampon bırak)
+        usdt_amount = usdt_balance * 0.9  # %90'ını kullan, stop-loss/take-profit için tampon bırak
         leverage = "10" if max_leverage >= 10 else str(max_leverage)  # String
         total_value = usdt_amount * int(leverage)
         size = max(min_order_size, int(total_value / (eth_price * multiplier)))
@@ -398,12 +398,6 @@ async def open_position(signal, usdt_balance):
         if required_margin > usdt_balance:
             logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
-        
-        # Stop-loss/take-profit için gereken ek bakiyeyi kontrol et (tahmini)
-        required_stop_margin = required_margin * 1.1  # KuCoin genelde ek bir tampon ister
-        if usdt_balance < required_stop_margin:
-            logger.error(f"Stop-loss/take-profit için yetersiz bakiye: Gerekli {required_stop_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
-            return {"success": False, "error": f"Stop-loss/take-profit için yetersiz bakiye: {required_stop_margin:.2f} USDT gerekli"}
         
         # Stop-loss ve take-profit fiyatlarını hesapla ve tickSize'a yuvarla
         stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
@@ -500,7 +494,6 @@ async def open_position(signal, usdt_balance):
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"success": False, "error": str(e)}
-
 # Yardımcı fonksiyon: Fiyatı tickSize'a yuvarlama
 def round_to_tick_size(price, tick_size):
     return round(price / tick_size) * tick_size
