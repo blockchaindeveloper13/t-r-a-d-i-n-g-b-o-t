@@ -1,3 +1,4 @@
+import os  # Bu satırı ekledik
 import requests
 import json
 import time
