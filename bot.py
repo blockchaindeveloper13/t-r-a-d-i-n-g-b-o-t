@@ -324,6 +324,25 @@ def get_funding_rate():
         return None
 
 # Pozisyon açma
+# Yardımcı fonksiyon: Aktif stop emirlerini kontrol et
+def check_stop_orders():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = f"https://api-futures.kucoin.com/api/v1/stop-orders?symbol={SYMBOL}"
+        payload = f"GET/api/v1/stop-orders?symbol={SYMBOL}"
+        headers = signer.headers(payload)
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        logger.info(f"Stop emirleri yanıtı: {data}")
+        if data.get('code') == '200000':
+            return data.get('data', [])
+        logger.error(f"Stop emirleri alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        return []
+    except Exception as e:
+        logger.error(f"Stop emirleri kontrol hatası: {str(e)}")
+        return []
+
+# Pozisyon açma (Güncellenmiş)
 async def open_position(signal, usdt_balance):
     try:
         # Fonlama oranı (opsiyonel)
@@ -423,63 +442,86 @@ async def open_position(signal, usdt_balance):
         order_id = data.get('data', {}).get('orderId')
         logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {order_id}")
         
-        # Stop-loss ve take-profit emri
-        st_order_data = {
+        # STOP-LOSS ve TAKE-PROFIT için AYRI AYRI siparişler oluştur
+        # 1. TAKE-PROFIT Emri
+        tp_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
             "symbol": SYMBOL,
-            "leverage": leverage,
             "type": "market",
             "size": size,
-            "triggerStopDownPrice": stop_loss_price,
-            "triggerStopUpPrice": take_profit_price,
-            "stopPriceType": "TP",  # Dökümandan gelen örneğe göre TP kullanıyoruz
+            "stopPrice": str(take_profit_price),
+            "stopPriceType": "TP",  # Take Profit
+            "reduceOnly": True,  # Sadece pozisyonu kapat
+            "workingType": "Mark",  # Mark price baz al
             "marginMode": "ISOLATED"
         }
         
-        # KuCoin API isteği (stop-loss ve take-profit)
-        st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
-        st_payload = f"POST/api/v1/st-orders{json.dumps(st_order_data)}"
-        headers = signer.headers(st_payload)
-        logger.info(f"Stop-loss/take-profit isteği gönderiliyor: {st_order_data}")
-        st_response = requests.post(st_url, headers=headers, json=st_order_data)
-        st_data = st_response.json()
-        logger.info(f"Stop-loss/take-profit sipariş yanıtı: {st_data}")
-        
-        if st_data.get('code') == '200000':
-            st_order_id = st_data.get('data', {}).get('orderId')
-            logger.info(f"Stop-loss ve take-profit başarıyla ayarlandı, Order ID: {st_order_id}")
-            # Aktif stop emirlerini kontrol et
-            stop_orders = check_stop_orders()
-            if stop_orders:
-                logger.info(f"Aktif stop emirleri bulundu: {stop_orders}")
-            else:
-                logger.warning("Aktif stop emri bulunamadı, emir oluşturulmamış olabilir.")
+        # 2. STOP-LOSS Emri
+        sl_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "sell" if signal == "buy" else "buy",
+            "symbol": SYMBOL,
+            "type": "market",
+            "size": size,
+            "stopPrice": str(stop_loss_price),
+            "stopPriceType": "SL",  # Stop Loss
+            "reduceOnly": True,  # Sadece pozisyonu kapat
+            "workingType": "Mark",  # Mark price baz al
+            "marginMode": "ISOLATED"
+        }
+
+        # TP ve SL için ayrı istekler gönder
+        orders = [tp_order_data, sl_order_data]
+        for order in orders:
+            st_url = "https://api-futures.kucoin.com/api/v1/stop-orders"
+            st_payload = f"POST/api/v1/stop-orders{json.dumps(order)}"
+            headers = signer.headers(st_payload)
+            logger.info(f"{order['stopPriceType']} isteği gönderiliyor: {order}")
+            st_response = requests.post(st_url, headers=headers, json=order)
+            st_data = st_response.json()
+            logger.info(f"{order['stopPriceType']} sipariş yanıtı: {st_data}")
             
-            # Telegram bildirimi
-            await send_telegram_message(
-                f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-                f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
-                f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-                f"Kontrat: {size}\n"
-                f"Kaldıraç: {leverage}x\n"
-                f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-                f"Stop Loss: {stop_loss_price:.2f} USDT\n"
-                f"Take Profit: {take_profit_price:.2f} USDT\n"
-                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-            return {"success": True, "orderId": order_id}
+            if st_data.get('code') == '200000':
+                st_order_id = st_data.get('data', {}).get('orderId')
+                logger.info(f"{order['stopPriceType']} emri başarıyla ayarlandı, Order ID: {st_order_id}")
+            else:
+                logger.error(f"{order['stopPriceType']} ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
+                # Hata durumunda diğer emri devam ettiriyoruz, ama hata bildiriyoruz
+                await send_telegram_message(
+                    f"⚠️ {order['stopPriceType']} emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"
+                )
+
+        # Aktif stop emirlerini kontrol et
+        stop_orders = check_stop_orders()
+        if stop_orders:
+            logger.info(f"Aktif stop emirleri bulundu: {stop_orders}")
         else:
-            logger.error(f"Stop-loss/take-profit ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
-            return {"success": False, "error": f"Stop-loss/take-profit ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}"}
+            logger.warning("Aktif stop emri bulunamadı, emir oluşturulmamış olabilir.")
+            await send_telegram_message(
+                f"⚠️ Uyarı: Aktif stop emri bulunamadı, lütfen kontrol edin."
+            )
+        
+        # Telegram bildirimi (başarılı pozisyon açılışı için)
+        await send_telegram_message(
+            f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
+            f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
+            f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
+            f"Kontrat: {size}\n"
+            f"Kaldıraç: {leverage}x\n"
+            f"Pozisyon Değeri: {position_value:.2f} USDT\n"
+            f"Stop Loss: {stop_loss_price:.2f} USDT\n"
+            f"Take Profit: {take_profit_price:.2f} USDT\n"
+            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        return {"success": True, "orderId": order_id}
     
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
+        await send_telegram_message(
+            f"⚠️ Pozisyon açma hatası: {str(e)}"
+        )
         return {"success": False, "error": str(e)}
-
-# Yardımcı fonksiyon: Fiyatı tickSize'a yuvarlama
-def round_to_tick_size(price, tick_size):
-    return round(price / tick_size) * tick_size
 # Ana döngü
 async def main():
     last_position = None  # Son pozisyonu takip etmek için
