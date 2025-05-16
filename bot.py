@@ -478,6 +478,11 @@ async def open_position(signal, usdt_balance):
             st_payload = f"POST/api/v1/stop-orders{json.dumps(order)}"
             headers = signer.headers(st_payload)
             logger.info(f"{order['stopPriceType']} isteği gönderiliyor: {order}")
+            logger.info(f"🚀 {order['stopPriceType']} Emri Gönderiliyor (Detaylar):\n"
+                f"Symbol: {order['symbol']}\n"
+                f"Size: {order['size']}\n"
+                f"StopPrice: {order['stopPrice']}\n"
+                f"ReduceOnly: {order['reduceOnly']}")
             st_response = requests.post(st_url, headers=headers, json=order)
             st_data = st_response.json()
             logger.info(f"{order['stopPriceType']} sipariş yanıtı: {st_data}")
