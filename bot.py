@@ -33,7 +33,6 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 # Telegram bot
 telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
-
 # Sabit ayarlar
 SYMBOL = "ETHUSDTM"  # BTCUSDTM olabilir, panelde kontrol et
 STOP_LOSS_PCT = 0.01  # %1
@@ -246,15 +245,16 @@ def get_contract_details():
                     return {
                         "multiplier": float(contract.get('multiplier', 0.001)),
                         "min_order_size": int(contract.get('minOrderQty', 1)),
-                        "max_leverage": int(contract.get('maxLeverage', 20))
+                        "max_leverage": int(contract.get('maxLeverage', 20)),
+                        "tick_size": float(contract.get('tickSize', 0.01))  # tickSize'ı ekledim
                     }
             logger.warning(f"{SYMBOL} kontratı bulunamadı")
-            return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
+            return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20, "tick_size": 0.01}
         logger.error(f"Kontrat detayları alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
-        return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
+        return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20, "tick_size": 0.01}
     except Exception as e:
         logger.error(f"Kontrat detayları hatası: {str(e)}")
-        return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20}
+        return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20, "tick_size": 0.01}
 
 # Pozisyon kontrol
 def check_positions():
@@ -323,6 +323,24 @@ def get_funding_rate():
         logger.error(f"Fonlama oranı hatası: {str(e)}")
         return None
 
+# Aktif stop emirlerini kontrol et
+def check_stop_orders():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = f"https://api-futures.kucoin.com/api/v1/stop-order?symbol={SYMBOL}"
+        payload = f"GET/api/v1/stop-order?symbol={SYMBOL}"
+        headers = signer.headers(payload)
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        logger.info(f"Aktif stop emirleri: {data}")
+        if data.get('code') == '200000':
+            return data.get('data', [])
+        logger.error(f"Stop emirleri alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        return []
+    except Exception as e:
+        logger.error(f"Stop emir kontrol hatası: {str(e)}")
+        return []
+
 # Pozisyon açma
 async def open_position(signal, usdt_balance):
     try:
@@ -380,6 +398,12 @@ async def open_position(signal, usdt_balance):
         if required_margin > usdt_balance:
             logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
+        
+        # Stop-loss/take-profit için gereken ek bakiyeyi kontrol et (tahmini)
+        required_stop_margin = required_margin * 1.1  # KuCoin genelde ek bir tampon ister
+        if usdt_balance < required_stop_margin:
+            logger.error(f"Stop-loss/take-profit için yetersiz bakiye: Gerekli {required_stop_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
+            return {"success": False, "error": f"Stop-loss/take-profit için yetersiz bakiye: {required_stop_margin:.2f} USDT gerekli"}
         
         # Stop-loss ve take-profit fiyatlarını hesapla ve tickSize'a yuvarla
         stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
@@ -480,6 +504,7 @@ async def open_position(signal, usdt_balance):
 # Yardımcı fonksiyon: Fiyatı tickSize'a yuvarlama
 def round_to_tick_size(price, tick_size):
     return round(price / tick_size) * tick_size
+
 # Ana döngü
 async def main():
     last_position = None  # Son pozisyonu takip etmek için
