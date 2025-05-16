@@ -336,17 +336,20 @@ async def open_position(signal, usdt_balance):
             logger.error("Yetersiz USDT bakiyesi veya bakiye alınamadı.")
             return {"success": False, "error": "Yetersiz bakiye"}
         
-        # Kontrat detayları
+        # Kontrat detayları (tickSize'ı da al)
         contract = get_contract_details()
         if not contract:
             logger.warning("Kontrat detayları alınamadı, varsayılan değerler kullanılıyor.")
             multiplier = 0.001
             min_order_size = 1
             max_leverage = 20
+            tick_size = 0.01  # Varsayılan
         else:
             multiplier = float(contract.get('multiplier', 0.001))
             min_order_size = int(contract.get('minOrderQty', 1))
             max_leverage = int(contract.get('maxLeverage', 20))
+            tick_size = float(contract.get('tickSize', 0.01))  # tickSize'ı al
+            logger.info(f"Kontrat detayları: tickSize={tick_size}, multiplier={multiplier}, min_order_size={min_order_size}, max_leverage={max_leverage}")
         
         # Fiyat al
         eth_price = get_eth_price()
@@ -378,10 +381,12 @@ async def open_position(signal, usdt_balance):
             logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
-        # Stop-loss ve take-profit
+        # Stop-loss ve take-profit fiyatlarını hesapla ve tickSize'a yuvarla
         stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
         take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
-        logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f}")
+        stop_loss_price = round_to_tick_size(stop_loss_price, tick_size)
+        take_profit_price = round_to_tick_size(take_profit_price, tick_size)
+        logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f} (tickSize={tick_size})")
         
         # Fiyat kontrolü
         if stop_loss_price <= 0 or take_profit_price <= 0:
@@ -393,7 +398,7 @@ async def open_position(signal, usdt_balance):
             "clientOid": str(uuid.uuid4()),
             "side": signal,
             "symbol": SYMBOL,
-            "leverage": leverage,  # String
+            "leverage": leverage,
             "type": "limit",
             "price": str(round(eth_price, 2)),
             "size": size,
@@ -418,17 +423,17 @@ async def open_position(signal, usdt_balance):
         order_id = data.get('data', {}).get('orderId')
         logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {order_id}")
         
-        # Stop-loss ve take-profit siparişi
+        # Stop-loss ve take-profit emri
         st_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
             "symbol": SYMBOL,
-            "leverage": leverage,  # String
+            "leverage": leverage,
             "type": "market",
             "size": size,
-            "triggerStopDownPrice": round(stop_loss_price, 2),
-            "triggerStopUpPrice": round(take_profit_price, 2),
-            "stopPriceType": "", 
+            "triggerStopDownPrice": stop_loss_price,
+            "triggerStopUpPrice": take_profit_price,
+            "stopPriceType": "TP",  # Dökümandan gelen örneğe göre TP kullanıyoruz
             "marginMode": "ISOLATED"
         }
         
@@ -436,12 +441,22 @@ async def open_position(signal, usdt_balance):
         st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
         st_payload = f"POST/api/v1/st-orders{json.dumps(st_order_data)}"
         headers = signer.headers(st_payload)
+        logger.info(f"Stop-loss/take-profit isteği gönderiliyor: {st_order_data}")
         st_response = requests.post(st_url, headers=headers, json=st_order_data)
         st_data = st_response.json()
         logger.info(f"Stop-loss/take-profit sipariş yanıtı: {st_data}")
         
         if st_data.get('code') == '200000':
-            logger.info("Stop-loss ve take-profit başarıyla ayarlandı")
+            st_order_id = st_data.get('data', {}).get('orderId')
+            logger.info(f"Stop-loss ve take-profit başarıyla ayarlandı, Order ID: {st_order_id}")
+            # Aktif stop emirlerini kontrol et
+            stop_orders = check_stop_orders()
+            if stop_orders:
+                logger.info(f"Aktif stop emirleri bulundu: {stop_orders}")
+            else:
+                logger.warning("Aktif stop emri bulunamadı, emir oluşturulmamış olabilir.")
+            
+            # Telegram bildirimi
             await send_telegram_message(
                 f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
                 f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
@@ -461,15 +476,42 @@ async def open_position(signal, usdt_balance):
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         return {"success": False, "error": str(e)}
+
+# Yardımcı fonksiyon: Fiyatı tickSize'a yuvarlama
+def round_to_tick_size(price, tick_size):
+    return round(price / tick_size) * tick_size
 # Ana döngü
 async def main():
+    last_position = None  # Son pozisyonu takip etmek için
     while True:
         try:
             position = check_positions()
             if position["exists"]:
                 logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
+                last_position = position
                 time.sleep(60)
                 continue
+            
+            # Pozisyon kapanmışsa kontrol et
+            if last_position and last_position["exists"]:
+                last_entry_price = last_position["entry_price"]
+                last_side = last_position["side"]
+                stop_loss_price = last_entry_price * (1 - STOP_LOSS_PCT) if last_side == "long" else last_entry_price * (1 + STOP_LOSS_PCT)
+                take_profit_price = last_entry_price * (1 + TAKE_PROFIT_PCT) if last_side == "long" else last_entry_price * (1 - TAKE_PROFIT_PCT)
+                current_price = get_eth_price()
+                if current_price:
+                    if last_side == "long" and current_price <= stop_loss_price:
+                        logger.info(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                        await send_telegram_message(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                    elif last_side == "long" and current_price >= take_profit_price:
+                        logger.info(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                        await send_telegram_message(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                    elif last_side == "short" and current_price >= stop_loss_price:
+                        logger.info(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                        await send_telegram_message(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                    elif last_side == "short" and current_price <= take_profit_price:
+                        logger.info(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
+                        await send_telegram_message(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
             
             usdt_balance, position_margin = check_usdm_balance()
             logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
