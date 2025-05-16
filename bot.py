@@ -341,7 +341,9 @@ def check_stop_orders():
     except Exception as e:
         logger.error(f"Stop emirleri kontrol hatası: {str(e)}")
         return []
-
+def round_to_tick_size(price: float, tick_size: float) -> float:
+    """Fiyatı kontratın tick boyutuna göre yuvarlar."""
+    return round(price / tick_size) * tick_size
 # Pozisyon açma (Güncellenmiş)
 async def open_position(signal, usdt_balance):
     try:
