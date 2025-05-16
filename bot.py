@@ -345,6 +345,36 @@ def round_to_tick_size(price: float, tick_size: float) -> float:
     """Fiyatı kontratın tick boyutuna göre yuvarlar."""
     return round(price / tick_size) * tick_size
 # Pozisyon açma (Güncellenmiş)
+import time
+
+# Yardımcı fonksiyon: Emir durumunu kontrol et
+def check_order_status(order_id: str) -> bool:
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = f"https://api-futures.kucoin.com/api/v1/orders/{order_id}"
+        payload = f"GET/api/v1/orders/{order_id}"
+        headers = signer.headers(payload)
+        response = requests.get(url, headers=headers)
+        data = response.json()
+        logger.info(f"Emir durumu yanıtı: {data}")
+        if data.get('code') == '200000':
+            status = data.get('data', {}).get('status')
+            if status == 'done':
+                logger.info(f"Emir {order_id} tamamlandı (filled).")
+                return True
+            elif status == 'canceled':
+                logger.error(f"Emir {order_id} iptal edildi.")
+                return False
+            else:
+                logger.info(f"Emir {order_id} henüz tamamlanmadı, durum: {status}")
+                return False
+        logger.error(f"Emir durumu alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        return False
+    except Exception as e:
+        logger.error(f"Emir durumu kontrol hatası: {str(e)}")
+        return False
+
+# Pozisyon açma (Güncellenmiş)
 async def open_position(signal, usdt_balance):
     try:
         # Fonlama oranı (opsiyonel)
@@ -442,10 +472,35 @@ async def open_position(signal, usdt_balance):
             return {"success": False, "error": data.get('msg', 'Bilinmeyen hata')}
         
         order_id = data.get('data', {}).get('orderId')
-        logger.info(f"Pozisyon başarıyla açıldı! Sipariş ID: {order_id}")
-        
+        logger.info(f"Pozisyon açma emri gönderildi! Sipariş ID: {order_id}")
+
+        # Emirin fill olmasını bekle (maksimum 30 saniye)
+        max_wait_time = 30  # saniye
+        check_interval = 2  # saniye
+        start_time = time.time()
+        while time.time() - start_time < max_wait_time:
+            if check_order_status(order_id):
+                logger.info(f"Pozisyon açıldı, TP/SL emirleri gönderiliyor.")
+                break
+            logger.info(f"Emir {order_id} henüz fill olmadı, bekleniyor...")
+            time.sleep(check_interval)
+        else:
+            logger.error(f"Emir {order_id} {max_wait_time} saniye içinde fill olmadı, işlem iptal ediliyor.")
+            await send_telegram_message(
+                f"⚠️ Hata: Pozisyon emri {order_id} {max_wait_time}s içinde fill olmadı, işlem iptal edildi."
+            )
+            return {"success": False, "error": f"Emir {max_wait_time}s içinde fill olmadı"}
+
+        # Pozisyon açıldığını doğrula
+        position = check_positions()
+        if not position.get("exists"):
+            logger.error("Pozisyon açılmadı, TP/SL emirleri gönderilemiyor.")
+            await send_telegram_message(
+                f"⚠️ Hata: Pozisyon açılmadı, TP/SL emirleri gönderilemedi."
+            )
+            return {"success": False, "error": "Pozisyon açılmadı"}
+
         # STOP-LOSS ve TAKE-PROFIT için AYRI AYRI siparişler oluştur
-        # 1. TAKE-PROFIT Emri
         tp_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
@@ -459,7 +514,6 @@ async def open_position(signal, usdt_balance):
             "marginMode": "ISOLATED"
         }
         
-        # 2. STOP-LOSS Emri
         sl_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
@@ -473,31 +527,44 @@ async def open_position(signal, usdt_balance):
             "marginMode": "ISOLATED"
         }
 
-        # TP ve SL için ayrı istekler gönder
+        # TP ve SL için ayrı istekler gönder (yeniden deneme ile)
         orders = [tp_order_data, sl_order_data]
+        max_retries = 3
+        retry_delay = 1  # saniye
         for order in orders:
-            st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
-            st_payload = f"POST/api/v1/st-orders{json.dumps(order)}"
-            headers = signer.headers(st_payload)
-            logger.info(f"{order['stopPriceType']} isteği gönderiliyor: {order}")
-            logger.info(f"🚀 {order['stopPriceType']} Emri Gönderiliyor (Detaylar):\n"
-                f"Symbol: {order['symbol']}\n"
-                f"Size: {order['size']}\n"
-                f"StopPrice: {order['stopPrice']}\n"
-                f"ReduceOnly: {order['reduceOnly']}")
-            st_response = requests.post(st_url, headers=headers, json=order)
-            st_data = st_response.json()
-            logger.info(f"{order['stopPriceType']} sipariş yanıtı: {st_data}")
-            
-            if st_data.get('code') == '200000':
-                st_order_id = st_data.get('data', {}).get('orderId')
-                logger.info(f"{order['stopPriceType']} emri başarıyla ayarlandı, Order ID: {st_order_id}")
-            else:
-                logger.error(f"{order['stopPriceType']} ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
-                # Hata durumunda diğer emri devam ettiriyoruz, ama hata bildiriyoruz
-                await send_telegram_message(
-                    f"⚠️ {order['stopPriceType']} emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"
-                )
+            for attempt in range(max_retries):
+                try:
+                    st_url = "https://api-futures.kucoin.com/api/v1/stop-orders"
+                    st_payload = f"POST/api/v1/stop-orders{json.dumps(order)}"
+                    headers = signer.headers(st_payload)
+                    logger.info(f"{order['stopPriceType']} isteği gönderiliyor: {order}")
+                    st_response = requests.post(st_url, headers=headers, json=order)
+                    st_data = st_response.json()
+                    logger.info(f"{order['stopPriceType']} sipariş yanıtı: {st_data}")
+                    
+                    if st_data.get('code') == '200000':
+                        st_order_id = st_data.get('data', {}).get('orderId')
+                        logger.info(f"{order['stopPriceType']} emri başarıyla ayarlandı, Order ID: {st_order_id}")
+                        break
+                    else:
+                        logger.error(f"{order['stopPriceType']} ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
+                        if attempt < max_retries - 1:
+                            logger.info(f"{order['stopPriceType']} için tekrar deneme: {attempt + 1}/{max_retries}")
+                            time.sleep(retry_delay)
+                            continue
+                        # Son denemede hata varsa bildir
+                        await send_telegram_message(
+                            f"⚠️ {order['stopPriceType']} emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"
+                        )
+                except Exception as e:
+                    logger.error(f"{order['stopPriceType']} gönderme hatası: {str(e)}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"{order['stopPriceType']} için tekrar deneme: {attempt + 1}/{max_retries}")
+                        time.sleep(retry_delay)
+                        continue
+                    await send_telegram_message(
+                        f"⚠️ {order['stopPriceType']} emri başarısız: {str(e)}"
+                    )
 
         # Aktif stop emirlerini kontrol et
         stop_orders = check_stop_orders()
