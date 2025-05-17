@@ -267,21 +267,23 @@ def check_positions():
         if data.get('code') == '200000':
             positions = data.get('data', [])
             if positions:
-                pos = positions[0]
-                return {
-                    "exists": True,
-                    "side": "long" if pos.get('currentQty', 0) > 0 else "short",
-                    "entry_price": float(pos.get('avgEntryPrice', 0)),
-                    "margin": float(pos.get('posMargin', 0)),
-                    "pnl": float(pos.get('unrealisedPnl', 0))
-                }
-            return {"exists": False}
+                result = []
+                for pos in positions:
+                    result.append({
+                        "exists": True,
+                        "side": "long" if pos.get('currentQty', 0) > 0 else "short",
+                        "entry_price": float(pos.get('avgEntryPrice', 0)),
+                        "margin": float(pos.get('posMargin', 0)),
+                        "pnl": float(pos.get('unrealisedPnl', 0)),
+                        "currentQty": pos.get('currentQty', 0)
+                    })
+                return result
+            return []
         logger.error(f"Pozisyon kontrolü başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-        return {"exists": False}
+        return []
     except Exception as e:
         logger.error(f"Pozisyon kontrol hatası: {str(e)}")
-        return {"exists": False}
-
+        return []
 # ETH fiyatı
 def get_eth_price():
     try:
@@ -320,6 +322,30 @@ def get_funding_rate():
     except Exception as e:
         logger.error(f"Fonlama oranı hatası: {str(e)}")
         return None
+
+def check_fills():
+    try:
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = f"https://api-futures.kucoin.com/api/v1/fills?symbol={SYMBOL}"
+        payload = f"GET/api/v1/fills?symbol={SYMBOL}"
+        headers = signer.headers(payload)
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        logger.info(f"Fills yanıtı: {data}")
+        if data.get('code') == '200000':
+            fills = data.get('data', {}).get('items', [])
+            result = []
+            for fill in fills[:3]:  # Son 3 kapanışı al
+                result.append({
+                    "price": float(fill.get('price', 0)),
+                    "reason": "TP" if fill.get('stop', '') == 'TP' else "Market" if fill.get('type', '') == 'market' else "Bilinmiyor"
+                })
+            return result
+        logger.error(f"Fills alınamadı: {data.get('msg', 'Bilinmeyen hata')}")
+        return []
+    except Exception as e:
+        logger.error(f"Fills kontrol hatası: {str(e)}")
+        return []
 
 # Pozisyon açma
 # Yardımcı fonksiyon: Aktif stop emirlerini kontrol et
@@ -597,75 +623,89 @@ if not success:
 
 
             
-         position = check_positions()
-if position["exists"]:
-    logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
-    last_position = position
-    
-    # Pozisyon sonrası bakiye/margin logu
-    usdt_balance, position_margin = check_usdm_balance()
-    logger.info(f"Pozisyon sonrası bakiye: {usdt_balance:.2f} USDT, Margin: {position_margin:.2f} USDT")
-    
-    # %2 zarar kontrolü
-    current_price = get_cached_price()
-    if not current_price:
-        logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
-        await asyncio.sleep(60)
-        continue
-    
-    entry_price = position['entry_price']
-    side = position['side']
-    size = abs(position.get('currentQty', 0))  # Pozisyon büyüklüğü
-    pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
-    
-    if pnl_pct <= -2:  # %2 zarar
-        logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
-        # Market emriyle pozisyonu kapat
-        close_order_data = {
-            "clientOid": str(uuid.uuid4()),
-            "side": "sell" if side == "long" else "buy",
-            "symbol": SYMBOL,
-            "type": "market",
-            "size": size,
-            "reduceOnly": True,
-            "marginMode": "ISOLATED"
-        }
-        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = "https://api-futures.kucoin.com/api/v1/orders"
-        payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
-        headers = signer.headers(payload)
+      positions = check_positions()
+if positions:
+    for position in positions:
+        logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
+        last_position = position
         
-        response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
-        data = response.json()
+       # Pozisyon kapanmışsa kapanış nedenini kontrol et
+if last_position and last_position["exists"]:
+    fills = check_fills()
+    if fills:
+        logger.info(f"Kapanış detayları: {fills}")
+        await send_telegram_message(
+            f"📉 Pozisyon kapandı!\n"
+            f"Yön: {last_position['side'].upper()}\n"
+            f"Giriş: {last_position['entry_price']:.2f} USDT\n"
+            f"Kapanış: {fills[-1]['price']:.2f} USDT\n"
+            f"Neden: {fills[-1]['reason']}"
+        )
+    last_position = None
+        # Pozisyon sonrası bakiye/margin logu
+        usdt_balance, position_margin = check_usdm_balance()
+        logger.info(f"Pozisyon sonrası bakiye: {usdt_balance:.2f} USDT, Margin: {position_margin:.2f} USDT")
         
-        if data.get('code') == '200000':
-            close_order_id = data.get('data', {}).get('orderId')
-            logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
-            await send_telegram_message(
-                f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
-                f"Sembol: {SYMBOL}\n"
-                f"Yön: {side.upper()}\n"
-                f"Giriş: {entry_price:.2f} USDT\n"
-                f"Kapanış: {current_price:.2f} USDT\n"
-                f"Büyüklük: {size} kontrat\n"
-                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-            # Açık limit/piyasa emirlerini temizle
-            cancel_url = f"https://api-futures.kucoin.com/api/v3/orders?symbol={SYMBOL}"
-            cancel_payload = f"DELETE/api/v3/orders?symbol={SYMBOL}"
-            cancel_headers = signer.headers(cancel_payload)
-            cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
-            cancel_data = cancel_response.json()
-            if cancel_data.get('code') == '200000':
-                cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
-                logger.info(f"Açık emir iptali: {cancelled_ids}")
+        # %2 zarar kontrolü
+        current_price = get_cached_price()
+        if not current_price:
+            logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
+            await asyncio.sleep(60)
+            continue
+        
+        entry_price = position['entry_price']
+        side = position['side']
+        size = abs(position.get('currentQty', 0))
+        pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
+        
+        if pnl_pct <= -2:  # %2 zarar
+            logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
+            # Market emriyle pozisyonu kapat
+            close_order_data = {
+                "clientOid": str(uuid.uuid4()),
+                "side": "sell" if side == "long" else "buy",
+                "symbol": SYMBOL,
+                "type": "market",
+                "size": size,
+                "reduceOnly": True,
+                "marginMode": "ISOLATED"
+            }
+            signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+            url = "https://api-futures.kucoin.com/api/v1/orders"
+            payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
+            headers = signer.headers(payload)
+            
+            response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
+            data = response.json()
+            
+            if data.get('code') == '200000':
+                close_order_id = data.get('data', {}).get('orderId')
+                logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
+                await send_telegram_message(
+                    f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
+                    f"Sembol: {SYMBOL}\n"
+                    f"Yön: {side.upper()}\n"
+                    f"Giriş: {entry_price:.2f} USDT\n"
+                    f"Kapanış: {current_price:.2f} USDT\n"
+                    f"Büyüklük: {size} kontrat\n"
+                    f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
+                # Açık limit/piyasa emirlerini temizle
+                cancel_url = f"https://api-futures.kucoin.com/api/v3/orders?symbol={SYMBOL}"
+                cancel_payload = f"DELETE/api/v3/orders?symbol={SYMBOL}"
+                cancel_headers = signer.headers(cancel_payload)
+                cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
+                cancel_data = cancel_response.json()
+                if cancel_data.get('code') == '200000':
+                    cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
+                    logger.info(f"Açık emir iptali: {cancelled_ids}")
+                else:
+                    logger.error(f"Açık emir iptali başarısız: {cancel_data.get('msg', 'Bilinmeyen hata')}")
             else:
-                logger.error(f"Açık emir iptali başarısız: {cancel_data.get('msg', 'Bilinmeyen hata')}")
-        else:
-            logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-            await send_telegram_message(
-                f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}"
-            )
+                logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+                await send_telegram_message(
+                    f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}"
+                )
     
     await asyncio.sleep(60)
     continue
