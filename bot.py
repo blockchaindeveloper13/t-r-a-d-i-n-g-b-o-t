@@ -36,7 +36,7 @@ telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Constants
 SYMBOL = "ETHUSDTM"
-TAKE_PROFIT_PCT = 0.001  # 0.1%
+TAKE_PROFIT_PCT = 0.002  # 0.1%
 DEEPSEARCH_INTERVAL = 4 * 3600  # 4 hours
 DEEPSEARCH_PER_DAY = 6
 MIN_BALANCE = 5  # Minimum 5 USDT
@@ -769,7 +769,6 @@ async def main():
             await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
-            await send_telegram_message(f"⛔ CRITICAL ERROR: {str(e)[:200]}...")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
