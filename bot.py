@@ -749,6 +749,107 @@ await asyncio.sleep(60)
             await send_telegram_message(f"⚠️ Döngü hatası: {str(e)}")
             await asyncio.sleep(60)
 
+async def main():
+    while True:
+        try:
+            # Bakiye kontrolü
+            usdt_balance, position_margin = check_usdm_balance()
+            logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
+            if usdt_balance < 5:
+                logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
+                await send_telegram_message(f"❌ KRİTİK: Bakiye yetersiz ({usdt_balance:.2f} USDT)! İşlem durduruldu.")
+                await asyncio.sleep(60)
+                continue
+
+            # Açık pozisyonları kontrol et
+            positions = check_positions()
+            last_position = None
+            if positions:
+                for position in positions:
+                    logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
+                    last_position = position
+
+                    # %2 zarar kontrolü
+                    current_price = get_cached_price()
+                    if not current_price:
+                        logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
+                        continue
+
+                    entry_price = position['entry_price']
+                    side = position['side']
+                    size = abs(position.get('currentQty', 0))
+                    pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
+
+                    if pnl_pct <= -2:  # %2 zarar
+                        logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
+                        close_order_data = {
+                            "clientOid": str(uuid.uuid4()),
+                            "side": "sell" if side == "long" else "buy",
+                            "symbol": SYMBOL,
+                            "type": "market",
+                            "size": size,
+                            "reduceOnly": True,
+                            "marginMode": "ISOLATED"
+                        }
+                        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+                        url = "https://api-futures.kucoin.com/api/v1/orders"
+                        payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
+                        headers = signer.headers(payload)
+                        response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
+                        data = response.json()
+
+                        if data.get('code') == '200000':
+                            close_order_id = data.get('data', {}).get('orderId')
+                            logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
+                            await send_telegram_message(
+                                f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
+                                f"Sembol: {SYMBOL}\n"
+                                f"Yön: {side.upper()}\n"
+                                f"Giriş: {entry_price:.2f} USDT\n"
+                                f"Kapanış: {current_price:.2f} USDT\n"
+                                f"Büyüklük: {size} kontrat\n"
+                                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                            )
+                        else:
+                            logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+                            await send_telegram_message(f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+
+            # İndikatörler ve DeepSearch
+            indicators = calculate_indicators()
+            if not indicators:
+                logger.warning("İndikatörler alınamadı, bir sonraki döngüye geçiliyor.")
+                await asyncio.sleep(60)
+                continue
+
+            deepsearch_result = run_deepsearch()
+            if not deepsearch_result:
+                logger.warning("DeepSearch sonucu alınamadı, bir sonraki döngüye geçiliyor.")
+                await asyncio.sleep(60)
+                continue
+
+            # Sinyal
+            signal = get_grok_signal(indicators, deepsearch_result)
+            logger.info(f"Grok sinyali: {signal}")
+            if signal == "bekle":
+                await asyncio.sleep(60)
+                continue
+
+            # Pozisyon aç
+            if not positions:  # Yeni pozisyon sadece açık pozisyon yoksa aç
+                result = await open_position(signal, usdt_balance)
+                if result.get("success"):
+                    logger.info(f"Pozisyon açıldı: {result}")
+                else:
+                    logger.error(f"Pozisyon açma başarısız: {result.get('error')}")
+                    await send_telegram_message(f"❌ Pozisyon açma başarısız: {result.get('error')}")
+
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            logger.error(f"Döngü hatası: {str(e)}")
+            await send_telegram_message(f"⚠️ Döngü hatası: {str(e)}")
+            await asyncio.sleep(60)
+
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
