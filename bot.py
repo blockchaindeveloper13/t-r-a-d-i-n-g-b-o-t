@@ -453,10 +453,9 @@ take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else et
 take_profit_price = round_to_tick_size(take_profit_price, tick_size)
 logger.info(f"Take Profit Fiyatı: {take_profit_price:.2f} (tickSize={tick_size})")
         
-        # Fiyat kontrolü
-        if stop_loss_price <= 0 or take_profit_price <= 0:
-            logger.error("Geçersiz stop-loss/take-profit fiyatı")
-            return {"success": False, "error": "Geçersiz fiyat"}
+       if take_profit_price <= 0:
+    logger.error("Geçersiz take-profit fiyatı")
+    return {"success": False, "error": "Geçersiz take-profit fiyatı"}
         
         # Pozisyon açma siparişi
         order_data = {
@@ -577,15 +576,16 @@ if not success:
 
         # Telegram bildirimi (başarılı pozisyon açılışı için)
         await send_telegram_message(
-            f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-            f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
-            f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-            f"Kontrat: {size}\n"
-            f"Kaldıraç: {leverage}x\n"
-            f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-            f"Take Profit: {take_profit_price:.2f} USDT\n"
-            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
+    f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
+    f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
+    f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
+    f"Kontrat: {size}\n"
+    f"Kaldıraç: {leverage}x\n"
+    f"Pozisyon Değeri: {position_value:.2f} USDT\n"
+    f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
+    f"Take Profit: {take_profit_price:.2f} USDT\n"
+    f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+)
         return {"success": True, "orderId": order_id, "size": size}
     
     except Exception as e:
