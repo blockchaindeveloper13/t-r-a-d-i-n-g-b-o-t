@@ -633,131 +633,79 @@ async def manage_existing_position(position):
 # Ana döngü
 async def main():
     global last_position
+    notification_cooldown = {
+        'balance_warning': 0,
+        'position_active': False
+    }  # Mesaj spam'ini önleme
+    
     while True:
         try:
-            # Bakiye kontrolü
+            # 1. Bakiye ve Pozisyon Kontrolü
             usdt_balance, position_margin = check_usdm_balance()
-            logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
+            positions = check_positions()
+            current_price = get_cached_price()
+            
+            # 2. Kritik Durum Kontrolleri
+            # 2.1 Yetersiz Bakiye Durumu
             if usdt_balance < MIN_BALANCE:
-                logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
-                await send_telegram_message(f"❌ KRİTİK: Bakiye yetersiz ({usdt_balance:.2f} USDT)! İşlem durduruldu.")
+                if not positions:  # Pozisyon yoksa ve bakiye yetersizse
+                    if time.time() - notification_cooldown['balance_warning'] > 3600:  # 1 saat cooldown
+                        await send_telegram_message(
+                            f"⚠️ Yetersiz Bakiye: {usdt_balance:.2f} USDT (Min: {MIN_BALANCE} USDT)\n"
+                            f"⏳ Sonraki kontrol: 5 dakika sonra"
+                        )
+                        notification_cooldown['balance_warning'] = time.time()
+                    await asyncio.sleep(300)  # 5 dakika bekle
+                    continue
+                else:  # Pozisyon varsa ama bakiye yetersizse
+                    logger.warning(f"Pozisyon açık ama bakiye düşük: {usdt_balance:.2f} USDT")
+
+            # 2.2 Aktif Pozisyon Kontrolü
+            if positions:
+                if not notification_cooldown['position_active']:
+                    pos = positions[0]
+                    await send_telegram_message(
+                        f"♻️ Açık Pozisyon Tespit Edildi:\n"
+                        f"Yön: {pos['side'].upper()}\n"
+                        f"Giriş: {pos['entry_price']:.2f}\n"
+                        f"Miktar: {abs(pos['currentQty'])} kontrat\n"
+                        f"Mevcut Fiyat: {current_price:.2f}"
+                    )
+                    notification_cooldown['position_active'] = True
+                
+                # Pozisyon yönetimini çağır
+                await manage_existing_position(positions[0])
                 await asyncio.sleep(60)
                 continue
+            else:
+                if notification_cooldown['position_active']:
+                    await send_telegram_message("✅ Tüm pozisyonlar kapandı")
+                    notification_cooldown['position_active'] = False
 
-            # Pozisyon kontrolü
-            positions = check_positions()
-            if positions:
-                for position in positions:
-                    logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
-                    last_position = position
-
-                    # %2 zarar kontrolü
-                    current_price = get_cached_price()
-                    if not current_price:
-                        logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
-                        continue
-
-                    entry_price = position['entry_price']
-                    side = position['side']
-                    size = abs(position.get('currentQty', 0))
-                    pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
-
-                    if pnl_pct <= -2:  # %2 zarar
-                        logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
-                        close_order_data = {
-                            "clientOid": str(uuid.uuid4()),
-                            "side": "sell" if side == "long" else "buy",
-                            "symbol": SYMBOL,
-                            "type": "market",
-                            "size": size,
-                            "reduceOnly": True,
-                            "marginMode": "ISOLATED"
-                        }
-                        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-                        url = "https://api-futures.kucoin.com/api/v1/orders"
-                        payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
-                        headers = signer.headers(payload)
-                        response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
-                        data = response.json()
-
-                        if data.get('code') == '200000':
-                            close_order_id = data.get('data', {}).get('orderId')
-                            logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
-                            await send_telegram_message(
-                                f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
-                                f"Sembol: {SYMBOL}\n"
-                                f"Yön: {side.upper()}\n"
-                                f"Giriş: {entry_price:.2f} USDT\n"
-                                f"Kapanış: {current_price:.2f} USDT\n"
-                                f"Büyüklük: {size} kontrat\n"
-                                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                            )
-                            # Açık emirleri temizle
-                            cancel_url = f"https://api-futures.kucoin.com/api/v1/orders?symbol={SYMBOL}"
-                            cancel_payload = f"DELETE/api/v1/orders?symbol={SYMBOL}"
-                            cancel_headers = signer.headers(cancel_payload)
-                            cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
-                            cancel_data = cancel_response.json()
-                            if cancel_data.get('code') == '200000':
-                                cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
-                                logger.info(f"Açık emir iptali: {cancelled_ids}")
-                            else:
-                                logger.error(f"Açık emir iptali başarısız: {cancel_data.get('msg', 'Bilinmeyen hata')}")
-                        else:
-                            logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-                            await send_telegram_message(f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
-
-            # Pozisyon kapanış kontrolü
-            if last_position and not positions:
-                fills = check_fills()
-                if fills:
-                    logger.info(f"Kapanış detayları: {fills}")
-                    await send_telegram_message(
-                        f"📉 Pozisyon Kapatıldı!\n"
-                        f"Sembol: {SYMBOL}\n"
-                        f"Yön: {last_position['side'].upper()}\n"
-                        f"Giriş: {last_position['entry_price']:.2f} USDT\n"
-                        f"Kapanış: {fills[0]['price']:.2f} USDT\n"
-                        f"Neden: {fills[0]['reason']}\n"
-                        f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    )
-                last_position = None
-
-            # İndikatörler
+            # 3. Normal İşlem Akışı
+            # 3.1 Göstergeleri Hesapla
             indicators = calculate_indicators()
             if not indicators:
-                logger.warning("İndikatörler alınamadı, bir sonraki döngüye geçiliyor.")
                 await asyncio.sleep(60)
                 continue
 
-            # DeepSearch
+            # 3.2 Sinyal Üret
             deepsearch_result = run_deepsearch()
-            if not deepsearch_result:
-                logger.warning("DeepSearch sonucu alınamadı, bir sonraki döngüye geçiliyor.")
-                await asyncio.sleep(60)
-                continue
-
-            # Sinyal
             signal = get_grok_signal(indicators, deepsearch_result)
-            logger.info(f"Grok sinyali: {signal}")
-            if signal == "bekle":
-                await asyncio.sleep(60)
-                continue
-
-            # Pozisyon aç
-            if not positions:  # Sadece açık pozisyon yoksa
-                result = await open_position(signal, usdt_balance)
-                if result.get("success"):
-                    logger.info(f"Pozisyon açıldı: {result}")
-                else:
-                    logger.error(f"Pozisyon açma başarısız: {result.get('error')}")
-                    await send_telegram_message(f"❌ Pozisyon açma başarısız: {result.get('error')}")
-
+            
+            if signal != "bekle":
+                logger.info(f"Yeni sinyal alındı: {signal.upper()}")
+                await open_position(signal, usdt_balance)
+            
+            # 3.3 Dinlenme Aralığı
             await asyncio.sleep(60)
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API bağlantı hatası: {str(e)}")
+            await asyncio.sleep(30)
         except Exception as e:
-            logger.error(f"Döngü hatası: {str(e)}")
-            await send_telegram_message(f"⚠️ Döngü hatası: {str(e)}")
+            logger.error(f"Beklenmeyen hata: {str(e)}")
+            await send_telegram_message(f"⛔ KRİTİK HATA: {str(e)[:200]}...")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
