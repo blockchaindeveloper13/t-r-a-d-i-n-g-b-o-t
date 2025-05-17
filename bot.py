@@ -392,54 +392,6 @@ def get_cached_price():
         current_price_cache.update({'price': price, 'timestamp': now})
     return price
 
-# Pozisyon takip sınıfı
-class PositionTracker:
-    def __init__(self):
-        self.active_positions = {}  # {symbol: {'side': 'long/short', 'sl_price': float, 'size': int, 'entry_price': float, 'open_time': datetime}}
-
-    async def track_and_close(self):
-        while True:
-            try:
-                for symbol, pos in list(self.active_positions.items()):
-                    current_price = get_cached_price()
-                    if not current_price:
-                        logger.warning(f"{symbol} için fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
-                        continue
-
-                    # SL kontrolü
-                    if (pos['side'] == 'long' and current_price <= pos['sl_price']) or \
-                       (pos['side'] == 'short' and current_price >= pos['sl_price']):
-                        logger.warning(f"MANUEL SL TETİKLENDİ! {symbol} {pos['side']} @ {pos['sl_price']}")
-                        await self.emergency_close_position(symbol, pos)
-                        continue
-
-                    # Pozisyon süresi kontrolü (max 4 saat)
-                    if (datetime.now() - pos['open_time']) > timedelta(hours=4):
-                        logger.warning(f"{symbol} pozisyonu 4 saati aştı, kapatılıyor.")
-                        await self.emergency_close_position(symbol, pos)
-                        continue
-
-                    # PnL kontrolü
-                    entry = pos['entry_price']
-                    pnl_pct = ((current_price - entry) / entry * 100) if pos['side'] == 'long' else ((entry - current_price) / entry * 100)
-                    if pnl_pct < -15:  # %15'ten fazla zarar
-                        logger.warning(f"{symbol} pozisyonu %15'ten fazla zarar etti, kapatılıyor.")
-                        await self.emergency_close_position(symbol, pos)
-                        continue
-
-                    # Pozisyon varlığını doğrula
-                    position = check_positions()
-                    if not position.get("exists"):
-                        logger.warning(f"{symbol} pozisyonu artık mevcut değil, tracker'dan kaldırılıyor.")
-                        self.active_positions.pop(symbol, None)
-
-                await asyncio.sleep(15)  # 15 saniyede bir kontrol
-            except Exception as e:
-                logger.error(f"Track_and_close hatası: {str(e)}")
-                await asyncio.sleep(15)  # Hata sonrası devam et
-
- 
-
 # Pozisyon açma (Güncellenmiş)
 async def open_position(signal, usdt_balance):
     try:
