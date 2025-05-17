@@ -200,8 +200,6 @@ def run_deepsearch():
         avg_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
         sentiment = "Bullish" if avg_score > 0.1 else "Bearish" if avg_score < -0.1 else "Neutral"
         
-        logger.info(f"DeepSearch: {len(crypto_news)} kripto haberi tarandı, sentiment: {sentiment}, ortalama skor: {avg_score:.3f}")
-        logger.info(f"DeepSearch: Tarama başlıkları: {[news['title'] for news in crypto_news]}")
         if reg_spec_contexts:
             logger.info(f"DeepSearch: Regülasyon/Spekülasyon bağlamları: {reg_spec_contexts}")
         
@@ -450,12 +448,10 @@ async def open_position(signal, usdt_balance):
             logger.error(f"Yetersiz bakiye: Gerekli margin {required_margin:.2f} USDT, mevcut {usdt_balance:.2f} USDT")
             return {"success": False, "error": f"Yetersiz bakiye: {required_margin:.2f} USDT gerekli"}
         
-        # Stop-loss ve take-profit fiyatlarını hesapla ve tickSize'a yuvarla
-        stop_loss_price = eth_price * (1 - STOP_LOSS_PCT) if signal == "buy" else eth_price * (1 + STOP_LOSS_PCT)
-        take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
-        stop_loss_price = round_to_tick_size(stop_loss_price, tick_size)
-        take_profit_price = round_to_tick_size(take_profit_price, tick_size)
-        logger.info(f"Stop Loss Fiyatı: {stop_loss_price:.2f}, Take Profit Fiyatı: {take_profit_price:.2f} (tickSize={tick_size})")
+     # Take-profit fiyatını hesapla ve tickSize'a yuvarla
+take_profit_price = eth_price * (1 + TAKE_PROFIT_PCT) if signal == "buy" else eth_price * (1 - TAKE_PROFIT_PCT)
+take_profit_price = round_to_tick_size(take_profit_price, tick_size)
+logger.info(f"Take Profit Fiyatı: {take_profit_price:.2f} (tickSize={tick_size})")
         
         # Fiyat kontrolü
         if stop_loss_price <= 0 or take_profit_price <= 0:
@@ -518,7 +514,7 @@ async def open_position(signal, usdt_balance):
             )
             return {"success": False, "error": "Pozisyon açılmadı"}
 
-        # STOP-LOSS ve TAKE-PROFIT için AYRI AYRI siparişler oluştur
+        # TAKE-PROFIT için AYRI AYRI siparişler oluştur
         tp_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
@@ -576,17 +572,8 @@ if not success:
             await send_telegram_message(
                 f"⚠️ Uyarı: Pozisyon bulunamadı, kapanmış olabilir. Lütfen kontrol edin."
             )
-        else:
-            # Pozisyonu tracker'a ekle
-            tracker = PositionTracker()  # Main'de tanımlıysa, global olarak eriş
-            tracker.active_positions[SYMBOL] = {
-                'side': 'long' if signal == 'buy' else 'short',
-                'sl_price': stop_loss_price,
-                'size': size,
-                'entry_price': eth_price,
-                'open_time': datetime.now()
-            }
-            logger.info(f"Pozisyon tracker'a eklendi: {SYMBOL}, SL: {stop_loss_price}")
+       else:
+    logger.info(f"Pozisyon başarıyla açıldı: {SYMBOL}, Giriş: {eth_price:.2f}")
 
         # Telegram bildirimi (başarılı pozisyon açılışı için)
         await send_telegram_message(
@@ -596,7 +583,6 @@ if not success:
             f"Kontrat: {size}\n"
             f"Kaldıraç: {leverage}x\n"
             f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-            f"Stop Loss: {stop_loss_price:.2f} USDT {'(Manuel tracker aktif)' if not sl_success else ''}\n"
             f"Take Profit: {take_profit_price:.2f} USDT\n"
             f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
@@ -609,20 +595,7 @@ if not success:
         )
         return {"success": False, "error": str(e)}
 
-# Güncellenmiş main döngüsü
-async def main():
-    tracker = PositionTracker()
-    asyncio.create_task(tracker.track_and_close())  # Arka planda çalışacak
-    
-    last_position = None
-    while True:
-        try:
-            position = check_positions()
-            if position["exists"]:
-                logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
-                last_position = position
-                await asyncio.sleep(60)
-                continue
+
             
             # Pozisyon kapanmışsa kontrol et
             if last_position and last_position["exists"]:
