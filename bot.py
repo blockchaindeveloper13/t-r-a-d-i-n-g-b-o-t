@@ -438,41 +438,7 @@ class PositionTracker:
                 logger.error(f"Track_and_close hatası: {str(e)}")
                 await asyncio.sleep(15)  # Hata sonrası devam et
 
-    async def emergency_close_position(self, symbol, position):
-        try:
-            order_data = {
-                "clientOid": str(uuid.uuid4()),
-                "side": "sell" if position['side'] == 'long' else 'buy',
-                "symbol": symbol,
-                "type": "market",
-                "size": position['size'],
-                "reduceOnly": True,
-                "marginMode": "ISOLATED"
-            }
-            
-            signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-            url = "https://api-futures.kucoin.com/api/v1/orders"
-            payload = f"POST/api/v1/orders{json.dumps(order_data)}"
-            headers = signer.headers(payload)
-            
-            response = requests.post(url, headers=headers, json=order_data, timeout=10)
-            data = response.json()
-            
-            if data.get('code') == '200000':
-                logger.info(f"Manuel SL ile pozisyon kapatıldı: {symbol}, Order ID: {data['data']['orderId']}")
-                await send_telegram_message(
-                    f"🆘 MANUEL SL İLE KAPATILDI!\n"
-                    f"Pozisyon: {symbol} {position['side'].upper()}\n"
-                    f"Büyüklük: {position['size']} kontrat\n"
-                    f"Fiyat: {get_cached_price() or 'Bilinmiyor':.2f}"
-                )
-                self.active_positions.pop(symbol, None)
-            else:
-                raise Exception(data.get('msg', 'Bilinmeyen hata'))
-                
-        except Exception as e:
-            logger.error(f"Manuel SL başarısız: {symbol}, Hata: {str(e)}")
-            await send_telegram_message(f"❌ MANUEL SL HATASI: {symbol}, {str(e)}")
+ 
 
 # Pozisyon açma (Güncellenmiş)
 async def open_position(signal, usdt_balance):
