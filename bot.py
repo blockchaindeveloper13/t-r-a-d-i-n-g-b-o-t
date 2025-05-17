@@ -597,33 +597,78 @@ if not success:
 
 
             
-            # Pozisyon kapanmışsa kontrol et
-            if last_position and last_position["exists"]:
-                last_entry_price = last_position["entry_price"]
-                last_side = last_position["side"]
-                stop_loss_price = last_entry_price * (1 - STOP_LOSS_PCT) if last_side == "long" else last_entry_price * (1 + STOP_LOSS_PCT)
-                take_profit_price = last_entry_price * (1 + TAKE_PROFIT_PCT) if last_side == "long" else last_entry_price * (1 - TAKE_PROFIT_PCT)
-                current_price = get_cached_price()
-                if current_price:
-                    if last_side == "long" and current_price <= stop_loss_price:
-                        logger.info(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                        await send_telegram_message(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                    elif last_side == "long" and current_price >= take_profit_price:
-                        logger.info(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                        await send_telegram_message(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                    elif last_side == "short" and current_price >= stop_loss_price:
-                        logger.info(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                        await send_telegram_message(f"Pozisyon kapandı (Stop-Loss): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                    elif last_side == "short" and current_price <= take_profit_price:
-                        logger.info(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-                        await send_telegram_message(f"Pozisyon kapandı (Take-Profit): {last_side}, Giriş: {last_entry_price}, Kapanış: {current_price}")
-            
-            usdt_balance, position_margin = check_usdm_balance()
-            logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
-            if usdt_balance < 5:
-                logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
-                await asyncio.sleep(60)
-                continue
+         position = check_positions()
+if position["exists"]:
+    logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
+    last_position = position
+    
+    # Pozisyon sonrası bakiye/margin logu
+    usdt_balance, position_margin = check_usdm_balance()
+    logger.info(f"Pozisyon sonrası bakiye: {usdt_balance:.2f} USDT, Margin: {position_margin:.2f} USDT")
+    
+    # %2 zarar kontrolü
+    current_price = get_cached_price()
+    if not current_price:
+        logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
+        await asyncio.sleep(60)
+        continue
+    
+    entry_price = position['entry_price']
+    side = position['side']
+    size = abs(position.get('currentQty', 0))  # Pozisyon büyüklüğü
+    pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
+    
+    if pnl_pct <= -2:  # %2 zarar
+        logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
+        # Market emriyle pozisyonu kapat
+        close_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "sell" if side == "long" else "buy",
+            "symbol": SYMBOL,
+            "type": "market",
+            "size": size,
+            "reduceOnly": True,
+            "marginMode": "ISOLATED"
+        }
+        signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+        url = "https://api-futures.kucoin.com/api/v1/orders"
+        payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
+        headers = signer.headers(payload)
+        
+        response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
+        data = response.json()
+        
+        if data.get('code') == '200000':
+            close_order_id = data.get('data', {}).get('orderId')
+            logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
+            await send_telegram_message(
+                f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
+                f"Sembol: {SYMBOL}\n"
+                f"Yön: {side.upper()}\n"
+                f"Giriş: {entry_price:.2f} USDT\n"
+                f"Kapanış: {current_price:.2f} USDT\n"
+                f"Büyüklük: {size} kontrat\n"
+                f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            # Açık limit/piyasa emirlerini temizle
+            cancel_url = f"https://api-futures.kucoin.com/api/v3/orders?symbol={SYMBOL}"
+            cancel_payload = f"DELETE/api/v3/orders?symbol={SYMBOL}"
+            cancel_headers = signer.headers(cancel_payload)
+            cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
+            cancel_data = cancel_response.json()
+            if cancel_data.get('code') == '200000':
+                cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
+                logger.info(f"Açık emir iptali: {cancelled_ids}")
+            else:
+                logger.error(f"Açık emir iptali başarısız: {cancel_data.get('msg', 'Bilinmeyen hata')}")
+        else:
+            logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
+            await send_telegram_message(
+                f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}"
+            )
+    
+    await asyncio.sleep(60)
+    continue
             
             indicators = calculate_indicators()
             deepsearch_result = run_deepsearch()
