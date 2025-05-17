@@ -622,8 +622,6 @@ async def open_position(signal, usdt_balance):
             await send_telegram_message(f"⚠️ Hata: Pozisyon açılmadı, TP emri gönderilemedi.")
             return {"success": False, "error": "Pozisyon açılmadı"}
 
-        # Take-profit emri
-     # Take-profit emri
 tp_order_data = {
     "clientOid": str(uuid.uuid4()),
     "side": "sell" if signal == "buy" else "buy",
@@ -674,18 +672,18 @@ except Exception as e:
     return {"success": False, "error": f"TP gönderme hatası: {str(e)}"}
         
         # Telegram bildirimi
-        await send_telegram_message(
-            f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-            f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
-            f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-            f"Kontrat: {size}\n"
-            f"Kaldıraç: {leverage}x\n"
-            f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-            f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
-            f"Take Profit: {take_profit_price:.2f} USDT\n"
-            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-        return {"success": True, "orderId": order_id, "size": size}
+       await send_telegram_message(
+    f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
+    f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
+    f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
+    f"Kontrat: {size}\n"
+    f"Kaldıraç: {leverage}x\n"
+    f"Pozisyon Değeri: {position_value:.2f} USDT\n"
+    f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
+    f"Take Profit: {take_profit_price:.2f} USDT\n"
+    f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+)
+return {"success": True, "orderId": order_id, "size": size}
     
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
