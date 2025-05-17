@@ -615,15 +615,6 @@ async def open_position(signal, usdt_balance):
             await send_telegram_message(f"⚠️ Hata: Pozisyon emri {order_id} {max_wait_time}s içinde fill olmadı.")
             return {"success": False, "error": f"Emir {max_wait_time}s içinde fill olmadı"}
 
-        # Pozisyon doğrulama
-        positions = check_positions()
-        if not positions:
-            logger.error("Pozisyon açılmadı, TP emri gönderilemiyor.")
-            await send_telegram_message(f"⚠️ Hata: Pozisyon açılmadı, TP emri gönderilemedi.")
-            return {"success": False, "error": "Pozisyon açılmadı"}
-            except Exception as e:
-    logger.error(f"Pozisyon kontrol hatası: {str(e)}")
-    return {"success": False, "error": f"Pozisyon kontrol hatası: {str(e)}"}
 
 tp_order_data = {
     "clientOid": str(uuid.uuid4()),
