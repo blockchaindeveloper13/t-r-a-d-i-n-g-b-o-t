@@ -545,35 +545,58 @@ async def open_position(signal, usdt_balance):
             return {"success": False, "error": "Pozisyon açılmadı"}
 
         # Take-profit emri
-        tp_order_data = {
-            "clientOid": str(uuid.uuid4()),
-            "side": "sell" if signal == "buy" else "buy",
-            "symbol": SYMBOL,
-            "type": "limit",
-            "size": size,
-            "stopPrice": str(take_profit_price),
-            "stopPriceType": "TP",
-            "reduceOnly": True,
-            "workingType": "Mark",
-            "marginMode": "ISOLATED"
-        }
-        
-        max_retries = 5
-        retry_delay = 2
-        success = False
-        for attempt in range(max_retries):
-            try:
-                st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
-                st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
-                headers = signer.headers(st_payload)
-                logger.info(f"TP isteği (deneme {attempt + 1}/{max_retries}): {tp_order_data}")
-                st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
-                st_data = st_response.json()
-                logger.info(f"TP sipariş yanıtı: {st_data}")
+       # Take-profit emri
+tp_order_data = {
+    "clientOid": str(uuid.uuid4()),
+    "side": "sell" if signal == "buy" else "buy",
+    "symbol": SYMBOL,
+    "type": "limit",
+    "size": size,
+    "stopPrice": str(take_profit_price),
+    "stopPriceType": "TP",
+    "reduceOnly": True,
+    "workingType": "Mark",
+    "marginMode": "ISOLATED"
+}
 
-if st_data.get('code') == '200000':
-    st_order_id = st_data.get('data', {}).get('orderId')
-    
+max_retries = 5
+retry_delay = 2
+success = False
+for attempt in range(max_retries):
+    try:
+        st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
+        st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
+        headers = signer.headers(st_payload)
+        logger.info(f"TP isteği (deneme {attempt + 1}/{max_retries}): {tp_order_data}")
+        st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
+        st_data = st_response.json()
+        logger.info(f"TP sipariş yanıtı: {st_data}")
+
+        if st_data.get('code') == '200000':
+            st_order_id = st_data.get('data', {}).get('orderId')
+            
+            # TP DOĞRULAMA BLOĞU (DÜZGÜN GİRİNTİLENMİŞ)
+            try:
+                tp_verified = await verify_tp_order(st_order_id, size)
+                if not tp_verified:
+                    await send_telegram_message(f"⚠️ TP emri tetiklenmedi! Manuel kontrol gerekli: {st_order_id}")
+                else:
+                    await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
+                    logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
+                    success = True
+                    break
+            except Exception as e:
+                logger.error(f"TP doğrulama hatası: {str(e)}")
+                
+        else:
+            logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                
+    except Exception as e:
+        logger.error(f"TP gönderme hatası (deneme {attempt + 1}): {str(e)}")
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
     # TP doğrulama (DOĞRU GİRİNTİYLE)
     tp_verified = await verify_tp_order(st_order_id, size)
     if not tp_verified:
