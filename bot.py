@@ -405,8 +405,8 @@ def check_order_status(order_id: str) -> bool:
 async def verify_tp_order(order_id: str) -> bool:
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/stop-orders?orderId={order_id}"
-        payload = f"GET/api/v1/stop-orders?orderId={order_id}"
+        url = f"https://api-futures.kucoin.com/api/v1/st-orders?orderId={order_id}"
+        payload = f"GET/api/v1/st-orders?orderId={order_id}"
         headers = signer.headers(payload)
         
         max_retries = 3
