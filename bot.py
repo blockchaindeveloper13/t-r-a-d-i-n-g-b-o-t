@@ -570,10 +570,12 @@ async def open_position(signal, usdt_balance):
                 st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
                 st_data = st_response.json()
                 logger.info(f"TP sipariş yanıtı: {st_data}")
-                
-                if st_data.get('code') == '200000':
-                    st_order_id = st_data.get('data', {}).get('orderId')
-                     tp_verified = await verify_tp_order(st_order_id, size)
+
+if st_data.get('code') == '200000':
+    st_order_id = st_data.get('data', {}).get('orderId')
+    
+    # TP doğrulama (DOĞRU GİRİNTİYLE)
+    tp_verified = await verify_tp_order(st_order_id, size)
     if not tp_verified:
         await send_telegram_message(f"⚠️ TP emri tetiklenmedi! Manuel kontrol gerekli: {st_order_id}")
     else:
