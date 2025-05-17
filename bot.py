@@ -36,7 +36,7 @@ telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Sabit ayarlar
 SYMBOL = "ETHUSDTM"
-TAKE_PROFIT_PCT = 0.01  # %1
+TAKE_PROFIT_PCT = 0.001  # %0.1
 DEEPSEARCH_INTERVAL = 4 * 3600  # 4 saat
 DEEPSEARCH_PER_DAY = 6
 MIN_BALANCE = 5  # Minimum 5 USDT
