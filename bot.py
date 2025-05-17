@@ -665,7 +665,7 @@ try:
     else:
         logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
         await send_telegram_message(f"⚠️ TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}")
-        return {"success": False, "error": f"TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}")
+        return {"success": False, "error": f"TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"}
 except Exception as e:
     logger.error(f"TP gönderme hatası: {str(e)}")
     await send_telegram_message(f"⚠️ TP emri başarısız: {str(e)}")
