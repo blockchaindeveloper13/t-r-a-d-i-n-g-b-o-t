@@ -717,21 +717,32 @@ if usdt_balance < 5:
     await asyncio.sleep(60)
     continue
             
-            indicators = calculate_indicators()
-            deepsearch_result = run_deepsearch()
-            signal = get_grok_signal(indicators, deepsearch_result)
-            
-            if signal == "bekle":
-                logger.info("Grok sinyali: Bekle")
-                await asyncio.sleep(60)
-                continue
-            
-            result = await open_position(signal, usdt_balance)
-            if result.get("success"):
-                logger.info("Pozisyon açıldı, bekleniyor")
-            else:
-                logger.error(f"Pozisyon açma başarısız: {result.get('error')}")
-            await asyncio.sleep(60)
+           indicators = calculate_indicators()
+if not indicators:
+    logger.warning("İndikatörler alınamadı, bir sonraki döngüye geçiliyor.")
+    await asyncio.sleep(60)
+    continue
+
+deepsearch_result = run_deepsearch()
+if not deepsearch_result:
+    logger.warning("DeepSearch sonucu alınamadı, bir sonraki döngüye geçiliyor.")
+    await asyncio.sleep(60)
+    continue
+
+signal = get_grok_signal(indicators, deepsearch_result)
+if signal == "bekle":
+    logger.info("Grok sinyali: Bekle")
+    await asyncio.sleep(60)
+    continue
+
+result = await open_position(signal, usdt_balance)
+if result.get("success"):
+    logger.info("Pozisyon açıldı, bekleniyor")
+else:
+    logger.error(f"Pozisyon açma başarısız: {result.get('error')}")
+    await send_telegram_message(f"❌ Pozisyon açma başarısız: {result.get('error')}")
+
+await asyncio.sleep(60)
         
         except Exception as e:
             logger.error(f"Döngü hatası: {str(e)}")
