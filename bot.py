@@ -785,11 +785,11 @@ async def main():
                 else:
                     logger.warning(f"Pozisyon açık ama bakiye düşük: {usdt_balance:.2f} USDT")
 
-            # 2.2 Aktif Pozisyon Kontrolü
+ # 2.2 Aktif Pozisyon Kontrolü
             if positions:
                 if not notification_cooldown['position_active']:
                     pos = positions[0]
-                   await send_telegram_message(
+    await send_telegram_message(
     f"♻️ Açık Pozisyon Tespit Edildi:\n"
     f"Yön: {pos['side'].upper()}\n"
     f"Giriş: {pos['entry_price']:.2f}\n"
