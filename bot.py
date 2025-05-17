@@ -16,15 +16,11 @@ from telegram.error import TelegramError
 from dotenv import load_dotenv
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import feedparser
-from logging.handlers import RotatingFileHandler
 import asyncio
 
-# Loglama ayarları (10MB sınırla dosya rotasyonu)
-handler = RotatingFileHandler('bot.log', maxBytes=10*1024*1024, backupCount=5)
-handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+# Loglama ayarları (Heroku için konsol loglaması)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
 
 # Config vars
 load_dotenv()
@@ -261,7 +257,7 @@ def get_contract_details():
                         "multiplier": float(contract.get('multiplier', 0.001)),
                         "min_order_size": int(contract.get('minOrderQty', 1)),
                         "max_leverage": int(contract.get('maxLeverage', 20)),
-                        "tick_size": float(contract.get('tickSize', 0.01))  # tickSize eklendi
+                        "tick_size": float(contract.get('tickSize', 0.01))
                     }
             logger.warning(f"{SYMBOL} kontratı bulunamadı")
             return {"multiplier": 0.001, "min_order_size": 1, "max_leverage": 20, "tick_size": 0.01}
@@ -351,7 +347,7 @@ def check_fills():
         if data.get('code') == '200000':
             fills = data.get('data', {}).get('items', [])
             result = []
-            for fill in fills[:3]:  # Son 3 kapanışı al
+            for fill in fills[:3]:
                 result.append({
                     "price": float(fill.get('price', 0)),
                     "reason": "TP" if fill.get('stop', '') == 'TP' else "Market" if fill.get('type', '') == 'market' else "Bilinmiyor"
@@ -366,7 +362,7 @@ def check_fills():
 # Fiyat önbellekleme
 def get_cached_price():
     now = time.time()
-    if now - current_price_cache['timestamp'] < 5:  # 5 saniyelik cache
+    if now - current_price_cache['timestamp'] < 5:
         return current_price_cache['price']
     
     price = get_eth_price()
@@ -404,12 +400,13 @@ def check_order_status(order_id: str) -> bool:
     except Exception as e:
         logger.error(f"Emir durumu kontrol hatası: {str(e)}")
         return False
-# Yeni ekleyeceğimiz fonksiyon
+
+# TP doğrulama
 async def verify_tp_order(order_id: str, expected_size: int) -> bool:
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/stop-orders/{order_id}"
-        payload = f"GET/api/v1/stop-orders/{order_id}"
+        url = f"https://api-futures.kucoin.com/api/v1/stop-orders?orderId={order_id}"
+        payload = f"GET/api/v1/stop-orders?orderId={order_id}"
         headers = signer.headers(payload)
         
         max_retries = 3
@@ -418,14 +415,17 @@ async def verify_tp_order(order_id: str, expected_size: int) -> bool:
             if response.status_code == 200:
                 data = response.json()
                 if data.get('code') == '200000':
-                    order_data = data.get('data', {})
-                    if order_data.get('status') == 'triggered':
-                        logger.info(f"TP emri başarıyla tetiklendi: {order_id}")
+                    items = data.get('data', {}).get('items', [])
+                    if not items:
+                        logger.error(f"TP emri bulunamadı: {order_id}")
+                        return False
+                    order_data = items[0]
+                    if order_data.get('size') == expected_size:
+                        logger.info(f"TP emri doğrulandı: {order_id}, durum: {order_data.get('status')}")
                         return True
-                    elif order_data.get('status') == 'active':
-                        logger.info(f"TP emri bekliyor: {order_id}")
-                        await asyncio.sleep(5)
-                        continue
+                    else:
+                        logger.error(f"TP emri boyutu uyuşmuyor: beklenen {expected_size}, bulunan {order_data.get('size')}")
+                        return False
             await asyncio.sleep(2)
         
         logger.error(f"TP doğrulama başarısız: {order_id}")
@@ -433,7 +433,76 @@ async def verify_tp_order(order_id: str, expected_size: int) -> bool:
     except Exception as e:
         logger.error(f"TP doğrulama hatası: {str(e)}")
         return False
+
+# Pozisyon kapatma (yeniden deneme ile)
+async def close_position_with_retry(position):
+    try:
+        side = position['side']
+        size = abs(position.get('currentQty', 0))
+        current_price = get_cached_price()
+        if not current_price:
+            logger.warning("Fiyat alınamadı, kapatma denenmeyecek.")
+            return False
+
+        close_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "sell" if side == "long" else "buy",
+            "symbol": SYMBOL,
+            "type": "market",
+            "size": size,
+            "reduceOnly": True,
+            "marginMode": "ISOLATED"
+        }
         
+        max_retries = 3
+        retry_delay = 2
+        for attempt in range(max_retries):
+            try:
+                signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
+                url = "https://api-futures.kucoin.com/api/v1/orders"
+                payload = f"POST/api/v1/orders{json.dumps(close_order_data)}"
+                headers = signer.headers(payload)
+                response = requests.post(url, headers=headers, json=close_order_data, timeout=10)
+                data = response.json()
+
+                if data.get('code') == '200000':
+                    close_order_id = data.get('data', {}).get('orderId')
+                    logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
+                    await send_telegram_message(
+                        f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
+                        f"Sembol: {SYMBOL}\n"
+                        f"Yön: {side.upper()}\n"
+                        f"Giriş: {position['entry_price']:.2f} USDT\n"
+                        f"Kapanış: {current_price:.2f} USDT\n"
+                        f"Büyüklük: {size} kontrat\n"
+                        f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    # Açık emirleri temizle
+                    cancel_url = f"https://api-futures.kucoin.com/api/v1/orders?symbol={SYMBOL}"
+                    cancel_payload = f"DELETE/api/v1/orders?symbol={SYMBOL}"
+                    cancel_headers = signer.headers(cancel_payload)
+                    cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
+                    cancel_data = cancel_response.json()
+                    if cancel_data.get('code') == '200000':
+                        cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
+                        logger.info(f"Açık emir iptali: {cancelled_ids}")
+                    return True
+                else:
+                    logger.error(f"Pozisyon kapatma başarısız (deneme {attempt + 1}): {data.get('msg', 'Bilinmeyen hata')}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+            except Exception as e:
+                logger.error(f"Pozisyon kapatma hatası (deneme {attempt + 1}): {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+        
+        logger.error(f"Pozisyon kapatma {max_retries} denemede başarısız.")
+        await send_telegram_message(f"❌ Pozisyon kapatma başarısız: {max_retries} deneme sonrası hata.")
+        return False
+    except Exception as e:
+        logger.error(f"Pozisyon kapatma genel hatası: {str(e)}")
+        return False
+
 # Pozisyon açma
 async def open_position(signal, usdt_balance):
     try:
@@ -545,67 +614,43 @@ async def open_position(signal, usdt_balance):
             return {"success": False, "error": "Pozisyon açılmadı"}
 
         # Take-profit emri
-       # Take-profit emri
-tp_order_data = {
-    "clientOid": str(uuid.uuid4()),
-    "side": "sell" if signal == "buy" else "buy",
-    "symbol": SYMBOL,
-    "type": "limit",
-    "size": size,
-    "stopPrice": str(take_profit_price),
-    "stopPriceType": "TP",
-    "reduceOnly": True,
-    "workingType": "Mark",
-    "marginMode": "ISOLATED"
-}
-
-max_retries = 5
-retry_delay = 2
-success = False
-for attempt in range(max_retries):
-    try:
-        st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
-        st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
-        headers = signer.headers(st_payload)
-        logger.info(f"TP isteği (deneme {attempt + 1}/{max_retries}): {tp_order_data}")
-        st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
-        st_data = st_response.json()
-        logger.info(f"TP sipariş yanıtı: {st_data}")
-
-        if st_data.get('code') == '200000':
-            st_order_id = st_data.get('data', {}).get('orderId')
-            
-            # TP DOĞRULAMA BLOĞU (DÜZGÜN GİRİNTİLENMİŞ)
+        tp_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "sell" if signal == "buy" else "buy",
+            "symbol": SYMBOL,
+            "type": "limit",
+            "size": size,
+            "stopPrice": str(take_profit_price),
+            "stopPriceType": "TP",
+            "reduceOnly": True,
+            "workingType": "Mark",
+            "marginMode": "ISOLATED"
+        }
+        
+        max_retries = 5
+        retry_delay = 2
+        success = False
+        for attempt in range(max_retries):
             try:
-                tp_verified = await verify_tp_order(st_order_id, size)
-                if not tp_verified:
-                    await send_telegram_message(f"⚠️ TP emri tetiklenmedi! Manuel kontrol gerekli: {st_order_id}")
-                else:
-                    await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
-                    logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
-                    success = True
-                    break
-            except Exception as e:
-                logger.error(f"TP doğrulama hatası: {str(e)}")
-                
-        else:
-            logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                
-    except Exception as e:
-        logger.error(f"TP gönderme hatası (deneme {attempt + 1}): {str(e)}")
-        if attempt < max_retries - 1:
-            time.sleep(retry_delay)
-    # TP doğrulama (DOĞRU GİRİNTİYLE)
-    tp_verified = await verify_tp_order(st_order_id, size)
-    if not tp_verified:
-        await send_telegram_message(f"⚠️ TP emri tetiklenmedi! Manuel kontrol gerekli: {st_order_id}")
-    else:
-        await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
-                    logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
-                    success = True
-                    break
+                st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
+                st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
+                headers = signer.headers(st_payload)
+                logger.info(f"TP isteği (deneme {attempt + 1}/{max_retries}): {tp_order_data}")
+                st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
+                st_data = st_response.json()
+                logger.info(f"TP sipariş yanıtı: {st_data}")
+
+                if st_data.get('code') == '200000':
+                    st_order_id = st_data.get('data', {}).get('orderId')
+                    # TP doğrulama
+                    tp_verified = await verify_tp_order(st_order_id, size)
+                    if tp_verified:
+                        await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
+                        logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
+                        success = True
+                        break
+                    else:
+                        await send_telegram_message(f"⚠️ TP emri tetiklenmedi! Manuel kontrol gerekli: {st_order_id}")
                 else:
                     logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
                     if attempt < max_retries - 1:
@@ -637,23 +682,26 @@ for attempt in range(max_retries):
         logger.error(f"Pozisyon açma hatası: {str(e)}")
         await send_telegram_message(f"⚠️ Pozisyon açma hatası: {str(e)}")
         return {"success": False, "error": str(e)}
+
+# Mevcut pozisyon yönetimi
 async def manage_existing_position(position):
     try:
         current_price = get_cached_price()
         if not current_price:
+            logger.warning("Fiyat alınamadı, pozisyon yönetimi atlanıyor.")
             return
 
         entry_price = position['entry_price']
         side = position['side']
-        pnl_pct = ((current_price - entry_price)/entry_price*100) if side=='long' else ((entry_price-current_price)/entry_price*100)
+        pnl_pct = ((current_price - entry_price) / entry_price * 100) if side == 'long' else ((entry_price - current_price) / entry_price * 100)
         
         if pnl_pct <= -2:
-            # Mevcut stop-loss mantığınızı buraya taşıyın
+            logger.warning(f"%2 zarar tespit edildi! {SYMBOL} {side} pozisyonu kapatılıyor.")
             await close_position_with_retry(position)
 
     except Exception as e:
         logger.error(f"Pozisyon yönetim hatası: {str(e)}")
-
+        await send_telegram_message(f"⚠️ Pozisyon yönetim hatası: {str(e)}")
 
 # Ana döngü
 async def main():
@@ -661,7 +709,7 @@ async def main():
     notification_cooldown = {
         'balance_warning': 0,
         'position_active': False
-    }  # Mesaj spam'ini önleme
+    }
     
     while True:
         try:
@@ -671,18 +719,17 @@ async def main():
             current_price = get_cached_price()
             
             # 2. Kritik Durum Kontrolleri
-            # 2.1 Yetersiz Bakiye Durumu
             if usdt_balance < MIN_BALANCE:
-                if not positions:  # Pozisyon yoksa ve bakiye yetersizse
-                    if time.time() - notification_cooldown['balance_warning'] > 3600:  # 1 saat cooldown
+                if not positions:
+                    if time.time() - notification_cooldown['balance_warning'] > 3600:
                         await send_telegram_message(
                             f"⚠️ Yetersiz Bakiye: {usdt_balance:.2f} USDT (Min: {MIN_BALANCE} USDT)\n"
                             f"⏳ Sonraki kontrol: 5 dakika sonra"
                         )
                         notification_cooldown['balance_warning'] = time.time()
-                    await asyncio.sleep(300)  # 5 dakika bekle
+                    await asyncio.sleep(300)
                     continue
-                else:  # Pozisyon varsa ama bakiye yetersizse
+                else:
                     logger.warning(f"Pozisyon açık ama bakiye düşük: {usdt_balance:.2f} USDT")
 
             # 2.2 Aktif Pozisyon Kontrolü
@@ -694,27 +741,42 @@ async def main():
                         f"Yön: {pos['side'].upper()}\n"
                         f"Giriş: {pos['entry_price']:.2f}\n"
                         f"Miktar: {abs(pos['currentQty'])} kontrat\n"
-                        f"Mevcut Fiyat: {current_price:.2f}"
+                        f"Mevcut Fiyat: {current_price:.2f if current_price else 'Bilinmiyor'}"
                     )
                     notification_cooldown['position_active'] = True
                 
-                # Pozisyon yönetimini çağır
                 await manage_existing_position(positions[0])
+                
+                # Pozisyon kapanış kontrolü
+                if last_position and not positions:
+                    fills = check_fills()
+                    if fills:
+                        logger.info(f"Kapanış detayları: {fills}")
+                        await send_telegram_message(
+                            f"📉 Pozisyon Kapatıldı!\n"
+                            f"Sembol: {SYMBOL}\n"
+                            f"Yön: {last_position['side'].upper()}\n"
+                            f"Giriş: {last_position['entry_price']:.2f} USDT\n"
+                            f"Kapanış: {fills[0]['price']:.2f} USDT\n"
+                            f"Neden: {fills[0]['reason']}\n"
+                            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                        )
+                    last_position = None
+                
                 await asyncio.sleep(60)
                 continue
             else:
                 if notification_cooldown['position_active']:
                     await send_telegram_message("✅ Tüm pozisyonlar kapandı")
                     notification_cooldown['position_active'] = False
+                last_position = None
 
             # 3. Normal İşlem Akışı
-            # 3.1 Göstergeleri Hesapla
             indicators = calculate_indicators()
             if not indicators:
                 await asyncio.sleep(60)
                 continue
 
-            # 3.2 Sinyal Üret
             deepsearch_result = run_deepsearch()
             signal = get_grok_signal(indicators, deepsearch_result)
             
@@ -722,7 +784,6 @@ async def main():
                 logger.info(f"Yeni sinyal alındı: {signal.upper()}")
                 await open_position(signal, usdt_balance)
             
-            # 3.3 Dinlenme Aralığı
             await asyncio.sleep(60)
 
         except requests.exceptions.RequestException as e:
