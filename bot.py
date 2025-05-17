@@ -745,13 +745,13 @@ async def main():
             if positions:
                 if not notification_cooldown['position_active']:
                     pos = positions[0]
-                    await send_telegram_message(
-                        f"♻️ Açık Pozisyon Tespit Edildi:\n"
-                        f"Yön: {pos['side'].upper()}\n"
-                        f"Giriş: {pos['entry_price']:.2f}\n"
-                        f"Miktar: {abs(pos['currentQty'])} kontrat\n"
-                        f"Mevcut Fiyat: {current_price:.2f if current_price else 'Bilinmiyor'}"
-                    )
+                   await send_telegram_message(
+    f"♻️ Açık Pozisyon Tespit Edildi:\n"
+    f"Yön: {pos['side'].upper()}\n"
+    f"Giriş: {pos['entry_price']:.2f}\n"
+    f"Miktar: {abs(pos['currentQty'])} kontrat\n"
+    f"Mevcut Fiyat: {current_price:.2f if current_price is not None else 'Bilinmiyor'}"
+)
                     notification_cooldown['position_active'] = True
                 
                 await manage_existing_position(positions[0])
