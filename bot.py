@@ -629,6 +629,7 @@ async def open_position(signal, usdt_balance):
             "symbol": SYMBOL,
             "type": "limit",
             "size": size,
+            "price": str(take_profit_price),
             "stopPrice": str(take_profit_price),
             "stopPriceType": "TP",
             "reduceOnly": True,
