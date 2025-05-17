@@ -402,36 +402,40 @@ def check_order_status(order_id: str) -> bool:
         return False
 
 # TP doğrulama
-async def verify_tp_order(order_id: str, expected_size: int) -> bool:
+async def verify_tp_order(order_id: str) -> bool:
     try:
         signer = KcSigner(KUCOIN_API_KEY, KUCOIN_API_SECRET, KUCOIN_API_PASSPHRASE)
-        url = f"https://api-futures.kucoin.com/api/v1/st-orders?orderId={order_id}"
-        payload = f"GET/api/v1/st-orders?orderId={order_id}"
+        url = f"https://api-futures.kucoin.com/api/v1/stop-orders?orderId={order_id}"
+        payload = f"GET/api/v1/stop-orders?orderId={order_id}"
         headers = signer.headers(payload)
         
         max_retries = 3
-        for _ in range(max_retries):
+        for attempt in range(max_retries):
             response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('code') == '200000':
-                    items = data.get('data', {}).get('items', [])
-                    if not items:
-                        logger.error(f"TP emri bulunamadı: {order_id}")
-                        return False
-                    order_data = items[0]
-                    if order_data.get('size') == expected_size:
-                        logger.info(f"TP emri doğrulandı: {order_id}, durum: {order_data.get('status')}")
-                        return True
-                    else:
-                        logger.error(f"TP emri boyutu uyuşmuyor: beklenen {expected_size}, bulunan {order_data.get('size')}")
-                        return False
-            await asyncio.sleep(2)
+            data = response.json()
+            logger.info(f"TP doğrulama yanıtı (deneme {attempt + 1}): {data}")
+            
+            if data.get('code') == '200000':
+                items = data.get('data', {}).get('items', [])
+                if not items:
+                    logger.error(f"TP emri bulunamadı: {order_id}")
+                    return False
+                order_data = items[0]
+                if order_data.get('status') in ['new', 'active']:
+                    logger.info(f"TP emri doğrulandı: {order_id}, durum: {order_data.get('status')}")
+                    return True
+                else:
+                    logger.error(f"TP emri geçersiz durum: {order_id}, durum: {order_data.get('status')}")
+                    return False
+            else:
+                logger.error(f"TP doğrulama hatası: {data.get('msg', 'Bilinmeyen hata')}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
         
-        logger.error(f"TP doğrulama başarısız: {order_id}")
+        logger.error(f"TP doğrulama {max_retries} denemede başarısız: {order_id}")
         return False
     except Exception as e:
-        logger.error(f"TP doğrulama hatası: {str(e)}")
+        logger.error(f"TP doğrulama genel hatası: {str(e)}")
         return False
 
 # Pozisyon kapatma (yeniden deneme ile)
@@ -444,6 +448,7 @@ async def close_position_with_retry(position):
             logger.warning("Fiyat alınamadı, kapatma denenmeyecek.")
             return False
 
+        # Pozisyon kapatma
         close_order_data = {
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if side == "long" else "buy",
@@ -468,6 +473,19 @@ async def close_position_with_retry(position):
                 if data.get('code') == '200000':
                     close_order_id = data.get('data', {}).get('orderId')
                     logger.info(f"Pozisyon %2 zararla kapatıldı, Order ID: {close_order_id}")
+                    
+                    # Açık emirleri iptal et (v3/orders)
+                    cancel_url = f"https://api-futures.kucoin.com/api/v3/orders?symbol={SYMBOL}"
+                    cancel_payload = f"DELETE/api/v3/orders?symbol={SYMBOL}"
+                    cancel_headers = signer.headers(cancel_payload)
+                    cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
+                    cancel_data = cancel_response.json()
+                    if cancel_data.get('code') == '200000':
+                        cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
+                        logger.info(f"Açık emir iptali: {cancelled_ids}")
+                    else:
+                        logger.error(f"Açık emir iptali başarısız: {cancel_data.get('msg', 'Bilinmeyen hata')}")
+                    
                     await send_telegram_message(
                         f"🛑 Pozisyon %2 Zararla Kapatıldı!\n"
                         f"Sembol: {SYMBOL}\n"
@@ -477,15 +495,6 @@ async def close_position_with_retry(position):
                         f"Büyüklük: {size} kontrat\n"
                         f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
                     )
-                    # Açık emirleri temizle
-                    cancel_url = f"https://api-futures.kucoin.com/api/v1/orders?symbol={SYMBOL}"
-                    cancel_payload = f"DELETE/api/v1/orders?symbol={SYMBOL}"
-                    cancel_headers = signer.headers(cancel_payload)
-                    cancel_response = requests.delete(cancel_url, headers=cancel_headers, timeout=10)
-                    cancel_data = cancel_response.json()
-                    if cancel_data.get('code') == '200000':
-                        cancelled_ids = cancel_data.get('data', {}).get('cancelledOrderIds', [])
-                        logger.info(f"Açık emir iptali: {cancelled_ids}")
                     return True
                 else:
                     logger.error(f"Pozisyon kapatma başarısız (deneme {attempt + 1}): {data.get('msg', 'Bilinmeyen hata')}")
