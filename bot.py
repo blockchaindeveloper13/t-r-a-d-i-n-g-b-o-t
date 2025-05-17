@@ -544,7 +544,7 @@ logger.info(f"Take Profit Fiyatı: {take_profit_price:.2f} (tickSize={tick_size}
             "clientOid": str(uuid.uuid4()),
             "side": "sell" if signal == "buy" else "buy",
             "symbol": SYMBOL,
-            "type": "market",
+            "type": "limit",
             "size": size,
             "stopPrice": str(take_profit_price),
             "stopPriceType": "TP",  # Take Profit
@@ -623,25 +623,12 @@ if not success:
 
 
             
-      positions = check_positions()
+    positions = check_positions()
 if positions:
     for position in positions:
         logger.info(f"Açık pozisyon: {position['side']}, Giriş: {position['entry_price']}, PnL: {position['pnl']}")
         last_position = position
         
-       # Pozisyon kapanmışsa kapanış nedenini kontrol et
-if last_position and last_position["exists"]:
-    fills = check_fills()
-    if fills:
-        logger.info(f"Kapanış detayları: {fills}")
-        await send_telegram_message(
-            f"📉 Pozisyon kapandı!\n"
-            f"Yön: {last_position['side'].upper()}\n"
-            f"Giriş: {last_position['entry_price']:.2f} USDT\n"
-            f"Kapanış: {fills[-1]['price']:.2f} USDT\n"
-            f"Neden: {fills[-1]['reason']}"
-        )
-    last_position = None
         # Pozisyon sonrası bakiye/margin logu
         usdt_balance, position_margin = check_usdm_balance()
         logger.info(f"Pozisyon sonrası bakiye: {usdt_balance:.2f} USDT, Margin: {position_margin:.2f} USDT")
@@ -650,7 +637,6 @@ if last_position and last_position["exists"]:
         current_price = get_cached_price()
         if not current_price:
             logger.warning("Fiyat alınamadı, bir sonraki döngüde tekrar denenecek.")
-            await asyncio.sleep(60)
             continue
         
         entry_price = position['entry_price']
@@ -704,9 +690,30 @@ if last_position and last_position["exists"]:
             else:
                 logger.error(f"Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}")
                 await send_telegram_message(
-                    f"❌ Pozisyon kapatma başarısız: {data.get('msg', 'Bilinmeyen hata')}"
+                    f"❌ Pozisyon capatma başarısız: {data.get('msg', 'Bilinmeyen hata')}"
                 )
-    
+
+# Pozisyon kapanmışsa kapanış nedenini kontrol et
+if last_position and last_position["exists"]:
+    fills = check_fills()
+    if fills:
+        logger.info(f"Kapanış detayları: {fills}")
+        await send_telegram_message(
+            f"📉 Pozisyon kapandı!\n"
+            f"Yön: {last_position['side'].upper()}\n"
+            f"Giriş: {last_position['entry_price']:.2f} USDT\n"
+            f"Kapanış: {fills[-1]['price']:.2f} USDT\n"
+            f"Neden: {fills[-1]['reason']}"
+        )
+    last_position = None
+
+usdt_balance, position_margin = check_usdm_balance()
+logger.info(f"Bakiye: {usdt_balance:.2f} USDT, Pozisyon Margin: {position_margin:.2f} USDT")
+if usdt_balance < 5:
+    logger.error(f"Yetersiz bakiye: {usdt_balance:.2f} USDT")
+    await send_telegram_message(
+        f"❌ KRİTİK: Bakiye yetersiz ({usdt_balance:.2f} USDT)! İşlem durduruldu."
+    )
     await asyncio.sleep(60)
     continue
             
