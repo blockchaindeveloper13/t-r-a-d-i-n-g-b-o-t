@@ -512,7 +512,6 @@ async def close_position_with_retry(position):
         logger.error(f"Pozisyon kapatma genel hatası: {str(e)}")
         return False
 
-# Pozisyon açma
 async def open_position(signal, usdt_balance):
     try:
         # Fonlama oranı (opsiyonel)
@@ -577,7 +576,7 @@ async def open_position(signal, usdt_balance):
             "side": signal,
             "symbol": SYMBOL,
             "leverage": leverage,
-            "type": "limit",
+            "type": "market",
             "price": str(round(eth_price, 2)),
             "size": size,
             "marginMode": "ISOLATED"
@@ -615,69 +614,67 @@ async def open_position(signal, usdt_balance):
             await send_telegram_message(f"⚠️ Hata: Pozisyon emri {order_id} {max_wait_time}s içinde fill olmadı.")
             return {"success": False, "error": f"Emir {max_wait_time}s içinde fill olmadı"}
 
+        # Pozisyon doğrulama
+        try:
+            positions = check_positions()
+            if not positions:
+                logger.error("Pozisyon açılmadı, TP emri gönderilemiyor.")
+                await send_telegram_message(f"⚠️ Hata: Pozisyon açılmadı, TP emri gönderilemedi.")
+                return {"success": False, "error": "Pozisyon açılmadı"}
+        except Exception as e:
+            logger.error(f"Pozisyon kontrol hatası: {str(e)}")
+            await send_telegram_message(f"⚠️ Hata: Pozisyon kontrol hatası: {str(e)}")
+            return {"success": False, "error": f"Pozisyon kontrol hatası: {str(e)}"}
 
-tp_order_data = {
-    "clientOid": str(uuid.uuid4()),
-    "side": "sell" if signal == "buy" else "buy",
-    "symbol": SYMBOL,
-    "type": "limit",
-    "size": size,
-    "price": str(take_profit_price),
-    "stopPrice": str(take_profit_price),
-    "stopPriceType": "TP",
-    "reduceOnly": True,
-    "workingType": "Mark",
-    "marginMode": "ISOLATED"
-}
+        # Take-profit emri
+        tp_order_data = {
+            "clientOid": str(uuid.uuid4()),
+            "side": "sell" if signal == "buy" else "buy",
+            "symbol": SYMBOL,
+            "type": "limit",
+            "size": size,
+            "price": str(take_profit_price),
+            "stopPrice": str(take_profit_price),
+            "stopPriceType": "TP",
+            "reduceOnly": True,
+            "workingType": "Mark",
+            "marginMode": "ISOLATED"
+        }
 
-try:
-    st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
-    st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
-    headers = signer.headers(st_payload)
-    logger.info(f"TP isteği: {tp_order_data}")
-    st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
-    st_data = st_response.json()
-    logger.info(f"TP sipariş yanıtı: {st_data}")
+        try:
+            st_url = "https://api-futures.kucoin.com/api/v1/st-orders"
+            st_payload = f"POST/api/v1/st-orders{json.dumps(tp_order_data)}"
+            headers = signer.headers(st_payload)
+            logger.info(f"TP isteği: {tp_order_data}")
+            st_response = requests.post(st_url, headers=headers, json=tp_order_data, timeout=10)
+            st_data = st_response.json()
+            logger.info(f"TP sipariş yanıtı: {st_data}")
 
-    if st_data.get('code') == '200000':
-        st_order_id = st_data.get('data', {}).get('orderId')
-        await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
-        logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
-        # Telegram bildirimi (pozisyon açılma)
-        await send_telegram_message(
-            f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-            f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
-            f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-            f"Kontrat: {size}\n"
-            f"Kaldıraç: {leverage}x\n"
-            f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-            f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
-            f"Take Profit: {take_profit_price:.2f} USDT\n"
-            f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-        return {"success": True, "orderId": order_id, "size": size}
-    else:
-        logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
-        await send_telegram_message(f"⚠️ TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}")
-        return {"success": False, "error": f"TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"}
-except Exception as e:
-    logger.error(f"TP gönderme hatası: {str(e)}")
-    await send_telegram_message(f"⚠️ TP emri başarısız: {str(e)}")
-    return {"success": False, "error": f"TP gönderme hatası: {str(e)}"}
-        
-        # Telegram bildirimi
-       await send_telegram_message(
-    f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
-    f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
-    f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
-    f"Kontrat: {size}\n"
-    f"Kaldıraç: {leverage}x\n"
-    f"Pozisyon Değeri: {position_value:.2f} USDT\n"
-    f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
-    f"Take Profit: {take_profit_price:.2f} USDT\n"
-    f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-)
-return {"success": True, "orderId": order_id, "size": size}
+            if st_data.get('code') == '200000':
+                st_order_id = st_data.get('data', {}).get('orderId')
+                await send_telegram_message(f"✅ TP başarıyla ayarlandı: {take_profit_price:.2f}")
+                logger.info(f"TP emri başarıyla ayarlandı, Order ID: {st_order_id}")
+                # Telegram bildirimi (pozisyon açılma)
+                await send_telegram_message(
+                    f"📈 Yeni Pozisyon Açıldı ({SYMBOL})\n"
+                    f"Yön: {'Long' if signal == 'buy' else 'Short'}\n"
+                    f"Giriş Fiyatı: {eth_price:.2f} USDT\n"
+                    f"Kontrat: {size}\n"
+                    f"Kaldıraç: {leverage}x\n"
+                    f"Pozisyon Değeri: {position_value:.2f} USDT\n"
+                    f"Stop Loss: %2 zarar kontrolü (döngüde)\n"
+                    f"Take Profit: {take_profit_price:.2f} USDT\n"
+                    f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
+                return {"success": True, "orderId": order_id, "size": size}
+            else:
+                logger.error(f"TP ayarlanamadı: {st_data.get('msg', 'Bilinmeyen hata')}")
+                await send_telegram_message(f"⚠️ TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}")
+                return {"success": False, "error": f"TP emri başarısız: {st_data.get('msg', 'Bilinmeyen hata')}"}
+        except Exception as e:
+            logger.error(f"TP gönderme hatası: {str(e)}")
+            await send_telegram_message(f"⚠️ TP emri başarısız: {str(e)}")
+            return {"success": False, "error": f"TP gönderme hatası: {str(e)}"}
     
     except Exception as e:
         logger.error(f"Pozisyon açma hatası: {str(e)}")
