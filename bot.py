@@ -741,7 +741,7 @@ async def main():
                         )
                     last_position = None
                 
-                await asyncio.sleep(10)
+                await asyncio.sleep(60)
                 continue
             else:
                 if notification_cooldown['position_active']:
@@ -752,7 +752,7 @@ async def main():
             # 3. Normal Trading Flow
             indicators = calculate_indicators()
             if not indicators:
-                await asyncio.sleep(10)
+                await asyncio.sleep(60)
                 continue
 
             deepsearch_result = run_deepsearch()
@@ -762,7 +762,7 @@ async def main():
                 logger.info(f"New signal received: {signal.upper()}")
                 await open_position(signal, usdt_balance)
             
-            await asyncio.sleep(10)
+            await asyncio.sleep(60)
 
         except requests.exceptions.RequestException as e:
             logger.error(f"API connection error: {str(e)}")
